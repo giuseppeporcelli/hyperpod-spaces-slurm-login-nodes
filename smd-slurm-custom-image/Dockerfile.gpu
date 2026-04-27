@@ -25,6 +25,9 @@ RUN chmod +x /usr/bin/configure-user.sh
 COPY configure-sudoers.sh /usr/bin/configure-sudoers.sh
 RUN chmod +x /usr/bin/configure-sudoers.sh
 
+COPY launcher.sh /usr/bin/launcher.sh
+RUN chmod +x /usr/bin/launcher.sh
+
 COPY start-code-editor-proxy.sh /usr/bin/start-code-editor-proxy.sh
 RUN chmod +x /usr/bin/start-code-editor-proxy.sh
 

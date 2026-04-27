@@ -51,6 +51,6 @@ echo "[proxy] Running sudoers configuration..."
 echo "[proxy] Running Slurm configuration..."
 /usr/bin/configure-slurm.sh
 
-echo "[proxy] Switching to ${HOME_DIR} and launching as ${USERNAME}..."
+echo "[proxy] Restarting remote access server as ${USERNAME} and launching runtime..."
 cd "$HOME_DIR"
-exec gosu "${USERNAME}" sagemaker-code-editor --host 0.0.0.0 --port 8888 --without-connection-token --default-folder "$HOME_DIR"
+exec /usr/bin/launcher.sh "${USERNAME}" sagemaker-code-editor --host 0.0.0.0 --port 8888 --without-connection-token --default-folder "$HOME_DIR"
