@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: protected-pvc-params
+  namespace: default
+data:
+  pvcName: "fsx-claim"
+  allowedTemplates: |
+    jupyterlab-smd-slurm-custom
+    code-editor-smd-slurm-custom

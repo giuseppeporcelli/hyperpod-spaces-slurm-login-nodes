@@ -1,0 +1,18 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: command-integrity-check-binding
+spec:
+  policyName: command-integrity-check
+  validationActions:
+    - Deny
+  paramRef:
+    name: command-integrity-params
+    namespace: default
+    parameterNotFoundAction: Deny
+  matchResources:
+    resourceRules:
+      - apiGroups: ["workspace.jupyter.org"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["workspaces"]

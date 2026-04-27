@@ -1,0 +1,15 @@
+image:
+  repository: 414900938744.dkr.ecr.us-west-2.amazonaws.com/hyperpod-spaces-user-webhook
+  tag: latest
+  pullPolicy: Always
+
+replicas: 1
+
+namespace: jupyter-k8s-system
+
+certManager:
+  issuerName: jupyter-k8s-selfsigned-issuer
+  issuerKind: Issuer
+
+serviceAccount:
+  annotations: {}

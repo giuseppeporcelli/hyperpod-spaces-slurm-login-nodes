@@ -1,0 +1,28 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: env-protection-check
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["workspace.jupyter.org"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["workspaces"]
+  validations:
+    - expression: >-
+        !has(object.metadata.labels) ||
+        !('workspace.jupyter.org/template-name' in object.metadata.labels) ||
+        !(object.metadata.labels['workspace.jupyter.org/template-name'] in params.data.allowedTemplates.split('\n').filter(v, v != '')) ||
+        !has(object.spec.env) ||
+        !object.spec.env.exists(e,
+          e.name in params.data.protectedEnvVars.split('\n').filter(v, v != '')
+        )
+      messageExpression: >-
+        'workspace spec.env contains a protected environment variable that cannot be set by users. '
+        + 'Protected variables: '
+        + params.data.protectedEnvVars.split('\n').filter(v, v != '').join(', ')
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap

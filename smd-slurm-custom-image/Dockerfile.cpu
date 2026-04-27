@@ -1,0 +1,32 @@
+FROM public.ecr.aws/sagemaker/sagemaker-distribution:4.0.0-cpu
+
+USER root
+RUN apt-get install -y gosu
+
+COPY config.sh /usr/bin/config.sh
+RUN chmod +x /usr/bin/config.sh
+
+COPY install-slurm.sh /tmp/install-slurm.sh
+COPY config.sh /tmp/config.sh
+RUN chmod +x /tmp/install-slurm.sh /tmp/config.sh && /tmp/install-slurm.sh && rm /tmp/install-slurm.sh /tmp/config.sh
+
+COPY install-sssd.sh /tmp/install-sssd.sh
+RUN chmod +x /tmp/install-sssd.sh && /tmp/install-sssd.sh && rm /tmp/install-sssd.sh
+
+COPY configure-slurm.sh /usr/bin/configure-slurm.sh
+RUN chmod +x /usr/bin/configure-slurm.sh
+
+COPY configure-sssd.sh /usr/bin/configure-sssd.sh
+RUN chmod +x /usr/bin/configure-sssd.sh
+
+COPY configure-user.sh /usr/bin/configure-user.sh
+RUN chmod +x /usr/bin/configure-user.sh
+
+COPY configure-sudoers.sh /usr/bin/configure-sudoers.sh
+RUN chmod +x /usr/bin/configure-sudoers.sh
+
+COPY start-code-editor-proxy.sh /usr/bin/start-code-editor-proxy.sh
+RUN chmod +x /usr/bin/start-code-editor-proxy.sh
+
+COPY start-jupyterlab-proxy.sh /usr/bin/start-jupyterlab-proxy.sh
+RUN chmod +x /usr/bin/start-jupyterlab-proxy.sh

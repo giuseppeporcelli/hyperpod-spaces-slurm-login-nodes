@@ -1,0 +1,32 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: command-integrity-check
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["workspace.jupyter.org"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["workspaces"]
+  validations:
+    # Skip validation if the workspace template is not in the allowed list
+    - expression: >-
+        !has(object.metadata.labels) ||
+        !('workspace.jupyter.org/template-name' in object.metadata.labels) ||
+        !(object.metadata.labels['workspace.jupyter.org/template-name'] in params.data) ||
+        (
+          has(object.spec.containerConfig) &&
+          has(object.spec.containerConfig.command) &&
+          object.spec.containerConfig.command.exists(c,
+            c.contains(params.data[object.metadata.labels['workspace.jupyter.org/template-name']])
+          )
+        )
+      messageExpression: >-
+        'workspace command does not match the expected command for template "' +
+        object.metadata.labels['workspace.jupyter.org/template-name'] +
+        '". The container command must not be altered from the template default.'
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap

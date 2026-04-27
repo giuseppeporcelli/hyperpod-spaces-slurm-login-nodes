@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: env-protection-params
+  namespace: default
+data:
+  # Newline-separated list of template names this policy applies to.
+  allowedTemplates: |
+    jupyterlab-smd-slurm-custom
+    code-editor-smd-slurm-custom
+  # Newline-separated list of environment variable names that users must not
+  # set in workspace specs. These are either injected by the mutating webhook
+  # or consumed by security-sensitive runtime scripts in the custom image.
+  protectedEnvVars: |
+    SPACES_WEBHOOK_USERNAME
+    USER_HOME_BASE
+    SLURM_SHARED_DIR
+    SLURM_CONF_FILENAME
+    ACCOUNTING_CONF_FILENAME
+    GRES_CONF_FILENAME
+    MUNGE_KEY_FILENAME
+    MUNGE_SOCKET_TIMEOUT
+    SSSD_ENABLED
+    SSSD_DOMAIN
+    SSSD_LDAP_URI
+    SSSD_LDAP_SEARCH_BASE
+    SSSD_LDAP_BIND_DN
+    SSSD_LDAP_AUTHTOK
+    SSSD_LDAP_AUTHTOK_TYPE
+    SSSD_LDAPS_CERT_PATH
+    SSSD_OVERRIDE_HOMEDIR
+    SUDOERS_GROUPS

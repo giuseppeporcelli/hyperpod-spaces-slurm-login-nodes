@@ -1,0 +1,18 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: env-protection-check-binding
+spec:
+  policyName: env-protection-check
+  validationActions:
+    - Deny
+  paramRef:
+    name: env-protection-params
+    namespace: default
+    parameterNotFoundAction: Deny
+  matchResources:
+    resourceRules:
+      - apiGroups: ["workspace.jupyter.org"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["workspaces"]

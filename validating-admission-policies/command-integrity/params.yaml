@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: command-integrity-params
+  namespace: default
+data:
+  # Each key is a template name from the allowed list.
+  # The value is the required substring that must appear in the container command.
+  jupyterlab-smd-slurm-custom: "exec /usr/bin/start-jupyterlab-proxy.sh"
+  code-editor-smd-slurm-custom: "exec /usr/bin/start-code-editor-proxy.sh"
