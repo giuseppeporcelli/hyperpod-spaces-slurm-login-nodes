@@ -396,7 +396,7 @@ To add a new template or update an expected command, edit `command-integrity/par
 
 ### Environment Variable Protection (`validating-admission-policies/env-protection/`)
 
-Prevents users from setting security-sensitive environment variables in their workspace specs when the workspace uses one of the configured templates. This blocks privilege escalation via env var injection (e.g. overriding `SUDOERS_GROUPS`, `USER_HOME_BASE`, or `SPACES_WEBHOOK_USERNAME`).
+Prevents users from setting security-sensitive environment variables in their workspace specs when the workspace uses one of the configured templates. This blocks privilege escalation via env var injection (e.g. overriding `SUDOERS_GROUPS` or `USER_HOME_BASE`). Note that `SPACES_WEBHOOK_USERNAME` is intentionally not in this list — the mutating webhook already strips any user-supplied value and re-injects the authenticated username, so the webhook alone is sufficient protection for that variable.
 
 The policy is scoped to specific templates: it first checks whether the workspace's `workspace.jupyter.org/template-name` label matches one of the template names listed in the `allowedTemplates` parameter. If the template is not in the list (or the label is missing), the policy allows the request. For matching templates, it then checks whether any env var in `spec.env` appears in the protected list and denies the request if so.
 

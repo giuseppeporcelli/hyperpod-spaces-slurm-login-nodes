@@ -9,10 +9,12 @@ data:
     jupyterlab-smd-slurm-custom
     code-editor-smd-slurm-custom
   # Newline-separated list of environment variable names that users must not
-  # set in workspace specs. These are either injected by the mutating webhook
-  # or consumed by security-sensitive runtime scripts in the custom image.
+  # set in workspace specs. These are consumed by security-sensitive runtime
+  # scripts in the custom image and must not be overridden by users.
+  # Note: SPACES_WEBHOOK_USERNAME is not listed here because the mutating
+  # webhook already strips any user-supplied value and re-injects the
+  # authenticated username.
   protectedEnvVars: |
-    SPACES_WEBHOOK_USERNAME
     USER_HOME_BASE
     SLURM_SHARED_DIR
     SLURM_CONF_FILENAME
