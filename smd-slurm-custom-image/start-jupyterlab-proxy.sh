@@ -31,6 +31,8 @@ echo "[proxy] Starting JupyterLab proxy for user=${USERNAME}, home=${HOME_DIR}"
 
 echo "[proxy] Setting HOME=${HOME_DIR}"
 export HOME="${HOME_DIR}"
+mv /home/sagemaker-user /tmp/sagemaker-user.bak
+ln -s ${HOME_DIR} /home/sagemaker-user
 
 echo "[proxy] Fixing permissions..."
 chmod 777 /var/log/studio /opt/amazon/sagemaker/user-data /home/sagemaker-user
