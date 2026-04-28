@@ -29,8 +29,6 @@ echo "[proxy] Starting Code Editor proxy for user=${USERNAME}, home=${HOME_DIR}"
 
 echo "[proxy] Setting HOME=${HOME_DIR}"
 export HOME="${HOME_DIR}"
-mv /home/sagemaker-user /tmp/sagemaker-user.bak
-ln -s ${HOME_DIR} /home/sagemaker-user
 
 echo "[proxy] Fixing permissions..."
 chmod 777 /var/log/studio /opt/amazon/sagemaker/user-data /home/sagemaker-user
@@ -53,6 +51,13 @@ echo "[proxy] Running sudoers configuration..."
 echo "[proxy] Running Slurm configuration..."
 /usr/bin/configure-slurm.sh
 
-echo "[proxy] Restarting remote access server as ${USERNAME} and launching runtime..."
+echo "[proxy] Sym-linking /home/sagemaker-user"
+mv /home/sagemaker-user /tmp/sagemaker-user.bak
+ln -s ${HOME_DIR} /home/sagemaker-user
 cd "$HOME_DIR"
-exec /usr/bin/launcher.sh "${USERNAME}" sagemaker-code-editor --host 0.0.0.0 --port 8888 --without-connection-token --default-folder "$HOME_DIR"
+
+echo "[proxy] Configuring remote access server as ${USERNAME}..."
+/usr/bin/configure-ras.sh "${USERNAME}"
+
+echo "[proxy] Launching Code Editor as ${USERNAME}..."
+exec gosu "${USERNAME}" sagemaker-code-editor --host 0.0.0.0 --port 8888 --without-connection-token --default-folder "$HOME_DIR"

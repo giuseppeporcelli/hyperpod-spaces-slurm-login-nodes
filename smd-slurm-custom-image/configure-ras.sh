@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# restart-remote-access.sh
+# configure-ras.sh
 # Stops the remote access server (if running as root) and restarts it
-# as the specified user via gosu, then exec's the given runtime script.
+# as the specified user.
 #
 # Usage:
-#   restart-remote-access.sh <username> <runtime_script> [runtime_args...]
+#   configure-ras.sh <username>
 #
-# This script is used as a wrapper: it restarts the remote access server
-# under the correct user identity, then hands off to the real runtime.
+# This script is called by the proxy entrypoints after all other
+# configuration is complete. The proxy scripts handle the final
+# gosu exec into the runtime themselves.
 
 set -euo pipefail
 
@@ -17,11 +18,8 @@ REMOTE_ACCESS_PORT="${REMOTE_ACCESS_SERVER_PORT:-2222}"
 SUPERVISOR_SOCKET="/var/run/supervisord/supervisor.sock"
 
 USERNAME="${1:?FATAL: username argument required}"
-shift
-RUNTIME_SCRIPT="${1:?FATAL: runtime_script argument required}"
-shift
 
-log() { printf '[remote-access-restart] %s\n' "$*"; }
+log() { printf '[remote-access] %s\n' "$*"; }
 
 # -----------------------------------------------------------------------
 # 1. Stop the remote access server running as root
@@ -85,6 +83,3 @@ start_remote_access_server_as_user() {
 # -----------------------------------------------------------------------
 stop_remote_access_server
 start_remote_access_server_as_user
-
-log "Handing off to runtime: ${RUNTIME_SCRIPT} $*"
-exec gosu "${USERNAME}" "${RUNTIME_SCRIPT}" "$@"

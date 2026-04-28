@@ -27,13 +27,13 @@ spec:
       memory: 8Gi
   defaultPodSecurityContext:
     fsGroup: 1000
-  defaultOwnershipType: Public
-  defaultAccessType: Public
+  defaultOwnershipType: OwnerOnly
+  defaultAccessType: OwnerOnly
   defaultAccessStrategy:
     name: hyperpod-access-strategy
     namespace: jupyter-k8s-system
   primaryStorage:
-    defaultMountPath: /home/sagemaker-user
+    defaultMountPath: /mnt/ebs-volume
     defaultSize: 5Gi
     defaultStorageClassName: sagemaker-spaces-default-storage-class
     maxSize: 100Gi

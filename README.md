@@ -236,7 +236,7 @@ Both Dockerfiles follow the same steps:
    - `configure-sssd.sh` — runtime SSSD/LDAP configuration
    - `configure-user.sh` — creates local passwd/group entries from NSS/SSSD
    - `configure-sudoers.sh` — hardens sudoers and grants group-based sudo
-   - `launcher.sh` — stops the root-owned remote access server and restarts it as the target user before exec'ing the runtime
+   - `configure-ras.sh` — stops the root-owned remote access server and restarts it as the target user
    - `start-code-editor-proxy.sh` — Code Editor entrypoint
    - `start-jupyterlab-proxy.sh` — JupyterLab entrypoint
 
@@ -280,17 +280,18 @@ These are the container entrypoints. They consume the webhook-injected environme
 4. Run `configure-user.sh <username>` to create local passwd/group entries (UID/GID/groups resolved via SSSD/NSS).
 5. Run `configure-sudoers.sh` to configure sudo access.
 6. Run `configure-slurm.sh` to initialize the Slurm client.
-7. Hand off to `launcher.sh`, which restarts the remote access server as the target user and then exec's the IDE runtime (see below).
+7. Replace `/home/sagemaker-user` with a symlink to the user's home directory on the shared filesystem, then `cd` into it.
+8. Run `configure-ras.sh` to stop the root-owned remote access server and restart it as the target user.
+9. Exec into the IDE runtime via `gosu`, dropping privileges to the target user.
 
-#### `launcher.sh`
+#### `configure-ras.sh`
 
-A wrapper script invoked by the proxy entrypoints after all configuration is complete. It takes a username and a runtime command as arguments and performs three steps:
+Called by the proxy entrypoints after all other configuration is complete. It takes a username as its only argument and performs two steps:
 
 1. Stops the remote access server if it is currently running as root. It first checks for a supervisord socket and attempts a clean stop via `supervisorctl`. Then it uses `pkill` (escalating to `kill -9` if needed) to ensure the process is fully terminated.
 2. Fixes permissions on `/var/log/studio/remoteAccess` (if the directory exists) so the non-root user can write logs, then starts the remote access server as the target user via `su`. The server runs in the background on the port defined by `REMOTE_ACCESS_SERVER_PORT` (default `2222`).
-3. Exec's into the runtime command (JupyterLab or Code Editor) as the target user via `gosu`, replacing the current process.
 
-This ensures the remote access server runs under the correct user identity rather than root, matching the privilege level of the IDE session.
+After this script returns, the proxy entrypoints exec into the IDE runtime via `gosu`, dropping privileges to the target user.
 
 ### Building the Custom Images
 
@@ -470,6 +471,8 @@ Workspace Pod starts with custom image
   │   resolves UID/GID/groups via SSSD/NSS, and creates local entries
   ├─ configure-sudoers.sh grants group-based sudo access
   ├─ configure-slurm.sh copies config from shared mount, starts MUNGE
-  └─ launcher.sh stops root-owned remote access server, restarts it as
-      the target user, then exec's gosu → launches JupyterLab or Code Editor
+  ├─ Proxy script symlinks /home/sagemaker-user → user home on shared FS
+  ├─ configure-ras.sh stops root-owned remote access server,
+  │   restarts it as the target user
+  └─ Proxy script exec's gosu → launches JupyterLab or Code Editor
 ```
