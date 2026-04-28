@@ -2,12 +2,21 @@
 #
 # configure-sudoers.sh
 # Hardens the sudoers file by removing the blanket NOPASSWD rule and
-# optionally granting passwordless sudo to specific groups.
+# configuring group-based sudo access in two tiers:
 #
-# Expected environment variables:
-#   SUDOERS_GROUPS - Comma-separated list of groups to grant sudo access
-#                    (e.g. "domain admins,sagemaker-admins,devops")
-#                    If unset or empty, no group rules are added.
+#   1. Full sudo — groups listed in SUDOERS_GROUPS receive unrestricted
+#      passwordless sudo (ALL commands).
+#
+#   2. Restricted sudo — groups listed in SUDOERS_RESTRICTED_GROUPS receive
+#      passwordless sudo limited to the commands in SUDOERS_ALLOWED_COMMANDS.
+#      A Cmnd_Alias is generated per group and only those commands are
+#      permitted; all other sudo invocations are denied.
+#
+# All variables are sourced from config.sh (hardcoded, not overridable):
+#   SUDOERS_GROUPS             - CSV of groups for full sudo
+#   SUDOERS_RESTRICTED_GROUPS  - CSV of groups for command-limited sudo
+#   SUDOERS_ALLOWED_COMMANDS   - Newline-separated list of allowed commands
+#                                (standard sudoers Cmnd syntax, wildcards OK)
 #
 
 set -eu
@@ -47,6 +56,54 @@ if [ -n "$SUDOERS_GROUPS" ]; then
   done
 else
   echo "[configure-sudoers] No SUDOERS_GROUPS defined; no group sudo rules added."
+fi
+
+# ---------------------------------------------------------------------------
+# Restricted-sudo groups: command-limited NOPASSWD rules
+# ---------------------------------------------------------------------------
+if [ -n "$SUDOERS_RESTRICTED_GROUPS" ] && [ -n "$SUDOERS_ALLOWED_COMMANDS" ]; then
+  # Build the comma-separated Cmnd_Alias value from the newline-separated list
+  CMND_LIST=""
+  IFS_SAVE="$IFS"
+  IFS='
+'
+  for CMD in $SUDOERS_ALLOWED_COMMANDS; do
+    CMD=$(echo "$CMD" | xargs)
+    [ -z "$CMD" ] && continue
+    if [ -z "$CMND_LIST" ]; then
+      CMND_LIST="$CMD"
+    else
+      CMND_LIST="$CMND_LIST, $CMD"
+    fi
+  done
+  IFS="$IFS_SAVE"
+
+  REMAINING="$SUDOERS_RESTRICTED_GROUPS"
+  while [ -n "$REMAINING" ]; do
+    GROUP="${REMAINING%%,*}"
+    if [ "$GROUP" = "$REMAINING" ]; then
+      REMAINING=""
+    else
+      REMAINING="${REMAINING#*,}"
+    fi
+
+    GROUP=$(echo "$GROUP" | xargs)
+    [ -z "$GROUP" ] && continue
+
+    SAFE_NAME=$(echo "$GROUP" | tr ' ' '_' | tr -cd '[:alnum:]_-')
+    SUDOERS_FILE="/etc/sudoers.d/restricted-${SAFE_NAME}"
+    ESCAPED_GROUP=$(echo "$GROUP" | sed 's/ /\\ /g')
+    ALIAS_NAME="RESTRICTED_$(echo "$SAFE_NAME" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+
+    echo "[configure-sudoers] Granting restricted NOPASSWD sudo to group '${GROUP}' -> ${SUDOERS_FILE}"
+    {
+      echo "Cmnd_Alias ${ALIAS_NAME} = ${CMND_LIST}"
+      echo "%${ESCAPED_GROUP} ALL=(ALL) NOPASSWD: ${ALIAS_NAME}"
+    } > "$SUDOERS_FILE"
+    chmod 0440 "$SUDOERS_FILE"
+  done
+else
+  echo "[configure-sudoers] No SUDOERS_RESTRICTED_GROUPS or SUDOERS_ALLOWED_COMMANDS defined; skipping restricted sudo rules."
 fi
 
 echo "[configure-sudoers] Sudoers configuration complete."

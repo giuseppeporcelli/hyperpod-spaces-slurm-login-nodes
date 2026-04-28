@@ -26,7 +26,7 @@ When a workspace is created or updated:
 3. Builds a set of JSON Patch operations that inject environment variables into the workspace pod spec:
    - `SPACES_WEBHOOK_USERNAME` — the raw username from the admission request
 
-At container startup, the custom image's proxy scripts first verify that `SPACES_WEBHOOK_USERNAME` is set (refusing to start if missing), then normalize the username (extracting the part after the last `/`, lowercasing, and stripping the `@domain` suffix), and derive the home directory from `USER_HOME_BASE` (hardcoded in `config.sh` as `/fsx`). SSSD/NSS is used to resolve the user's UID, GID, and supplemental groups from the identity provider (Active Directory / LDAP).
+At container startup, the custom image's proxy scripts first verify that `SPACES_WEBHOOK_USERNAME` is set (refusing to start if missing), then normalize the username (extracting the part after the last `/`, lowercasing, and stripping the `@domain` suffix), and derive the home directory from `USER_HOME_BASE` (hardcoded in `config.sh`, defaults to `/home`). SSSD/NSS is used to resolve the user's UID, GID, and supplemental groups from the identity provider (Active Directory / LDAP).
 
 ### Kubernetes Resources
 
@@ -130,13 +130,13 @@ The configuration is organized into six sections:
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `USER_HOME_BASE` | `/fsx` | Base path for user home directories. Proxy scripts derive `HOME_DIR` as `${USER_HOME_BASE}/<username>`. |
+| `USER_HOME_BASE` | `/home` | Base path for user home directories (where FSx for OpenZFS is typically mounted on HyperPod Slurm clusters). Proxy scripts derive `HOME_DIR` as `${USER_HOME_BASE}/<username>`. |
 
 #### 2. Shared mount (hardcoded)
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `SLURM_SHARED_DIR` | `/fsx/.hyperpod_spaces_conf` | Directory where Slurm/SSSD config files are mounted into the container |
+| `SLURM_SHARED_DIR` | `${USER_HOME_BASE}/.hyperpod_spaces_conf` | Directory where Slurm/SSSD config files are mounted into the container |
 
 #### 3. Slurm — build-time (`install-slurm.sh`) — overridable via build args
 
@@ -169,7 +169,7 @@ The configuration is organized into six sections:
 | `SSSD_LDAP_BIND_DN` | `CN=ReadOnly,OU=Users,OU=hyperpod,DC=hyperpod,DC=gianpo,DC=local` | Bind DN for LDAP queries |
 | `SSSD_LDAP_AUTHTOK_TYPE` | `obfuscated_password` | Auth token type |
 | `SSSD_LDAPS_CERT_PATH` | `${SLURM_SHARED_DIR}/ldaps.crt` | Path to LDAPS CA certificate |
-| `SSSD_OVERRIDE_HOMEDIR` | `/fsx/%u` | Override home directory template |
+| `SSSD_OVERRIDE_HOMEDIR` | `${USER_HOME_BASE}/%u` | Override home directory template |
 
 > `SSSD_LDAP_AUTHTOK` is intentionally not defined in `config.sh` — it is a secret. At runtime, if unset, `configure-sssd.sh` reads it from `${SLURM_SHARED_DIR}/ldap_authtok`.
 
@@ -177,11 +177,32 @@ The configuration is organized into six sections:
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `SUDOERS_GROUPS` | `ClusterAdmin,Domain Admins` | Comma-separated list of groups to grant passwordless sudo |
+| `SUDOERS_GROUPS` | `ClusterAdmin,Domain Admins` | Comma-separated list of groups to grant full (unrestricted) passwordless sudo |
+| `SUDOERS_RESTRICTED_GROUPS` | `language,evaluation,multimodal` | Comma-separated list of groups to grant command-limited passwordless sudo |
+| `SUDOERS_ALLOWED_COMMANDS` | *(see below)* | Newline-separated list of commands that restricted groups may run via sudo (standard sudoers `Cmnd` syntax, wildcards allowed) |
+
+The allowed commands for restricted groups are:
+
+```
+/bin/systemctl restart|start|stop|status|reload *
+/usr/bin/docker *
+/usr/local/bin/docker-compose *
+/sbin/fsck *
+/usr/bin/tail|less|cat|head /var/log/*
+/usr/bin/grep * /var/log/*
+/usr/bin/nvidia-smi
+/usr/bin/htop
+/usr/bin/iotop
+/usr/bin/apt * *
+/bin/kill -[0-9]* [0-9]*
+/usr/bin/pkill -f *
+```
+
+Each restricted group gets its own drop-in file under `/etc/sudoers.d/restricted-<group>` containing a `Cmnd_Alias` and a single rule that grants `NOPASSWD` access only to those commands. Groups in `SUDOERS_GROUPS` still receive full unrestricted sudo via separate drop-in files under `/etc/sudoers.d/group-<group>`.
 
 ### Shared Filesystem Prerequisites
 
-The runtime scripts expect a shared filesystem (e.g. FSx for Lustre or FSx for OpenZFS) to be mounted into the container at the path defined by `SLURM_SHARED_DIR` (default: `/fsx/.hyperpod_spaces_conf`). The following files must be present in that directory before the container starts:
+The runtime scripts expect a shared filesystem (e.g. FSx for Lustre or FSx for OpenZFS) to be mounted into the container at the path defined by `SLURM_SHARED_DIR` (default: `${USER_HOME_BASE}/.hyperpod_spaces_conf`, i.e. `/home/.hyperpod_spaces_conf`). The following files must be present in that directory before the container starts:
 
 | File | Required by | Description |
 |------|-------------|-------------|
@@ -199,15 +220,15 @@ The filenames for the Slurm files and the LDAPS certificate path are hardcoded i
 The directory and all files within it must be owned by `root:root` with read permissions for others removed. This prevents unprivileged users from reading sensitive material such as the MUNGE key and LDAP credentials. The runtime scripts run as root (or via `sudo`) and can still access the files.
 
 ```sh
-sudo chown -R root:root /fsx/.hyperpod_spaces_conf
-sudo chmod 700 /fsx/.hyperpod_spaces_conf
-sudo chmod 600 /fsx/.hyperpod_spaces_conf/*
+sudo chown -R root:root /home/.hyperpod_spaces_conf
+sudo chmod 700 /home/.hyperpod_spaces_conf
+sudo chmod 600 /home/.hyperpod_spaces_conf/*
 ```
 
 Expected directory layout:
 
 ```
-/fsx/.hyperpod_spaces_conf/       drwx------ root:root
+/home/.hyperpod_spaces_conf/      drwx------ root:root
 ├── slurm.conf                    -rw------- root:root
 ├── accounting.conf               -rw------- root:root
 ├── gres.conf                     -rw------- root:root
@@ -268,7 +289,10 @@ Ensures the user and group entries exist in local databases (`/etc/passwd`, `/et
 
 #### `configure-sudoers.sh`
 
-Removes the blanket `NOPASSWD` rule and grants passwordless sudo to the groups listed in `SUDOERS_GROUPS` (sourced from `config.sh`).
+Removes the blanket `NOPASSWD` rule and configures two tiers of sudo access (all sourced from `config.sh`):
+
+1. Groups in `SUDOERS_GROUPS` receive full unrestricted passwordless sudo.
+2. Groups in `SUDOERS_RESTRICTED_GROUPS` receive passwordless sudo limited to the commands defined in `SUDOERS_ALLOWED_COMMANDS`. A per-group `Cmnd_Alias` and sudoers drop-in file are generated under `/etc/sudoers.d/restricted-<group>`.
 
 #### `start-jupyterlab-proxy.sh` / `start-code-editor-proxy.sh`
 
@@ -470,6 +494,7 @@ Workspace Pod starts with custom image
   ├─ configure-user.sh receives the normalized username as an argument,
   │   resolves UID/GID/groups via SSSD/NSS, and creates local entries
   ├─ configure-sudoers.sh grants group-based sudo access
+  │   (full sudo for SUDOERS_GROUPS, command-limited for SUDOERS_RESTRICTED_GROUPS)
   ├─ configure-slurm.sh copies config from shared mount, starts MUNGE
   ├─ Proxy script symlinks /home/sagemaker-user → user home on shared FS
   ├─ configure-ras.sh stops root-owned remote access server,
