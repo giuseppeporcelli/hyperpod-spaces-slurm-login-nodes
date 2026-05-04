@@ -5,7 +5,7 @@ metadata:
   namespace: jupyter-k8s-system
 spec:
   displayName: "Code Editor with Slurm (Custom SMD)"
-  description: "SageMaker Distribution with Slurm client and UID/GID injection via webhook"
+  description: "SageMaker Distribution with Slurm client and UID/GID injection via WorkspaceAccessStrategy"
   appType: code-editor
   allowCustomImages: false
   allowSecondaryStorages: true

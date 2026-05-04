@@ -3,13 +3,13 @@ set -e
 
 source /usr/bin/config.sh
 
-if [ -z "${SPACES_WEBHOOK_USERNAME:-}" ]; then
-  echo "[proxy] FATAL: SPACES_WEBHOOK_USERNAME is not set or empty. Refusing to start." >&2
+if [ -z "${WORKSPACE_CREATOR_USERNAME:-}" ]; then
+  echo "[proxy] FATAL: WORKSPACE_CREATOR_USERNAME is not set or empty. Refusing to start." >&2
   exit 1
 fi
 
-FULL_USERNAME="${SPACES_WEBHOOK_USERNAME}"
-echo "[proxy] Raw username from webhook: ${FULL_USERNAME}"
+FULL_USERNAME="${WORKSPACE_CREATOR_USERNAME}"
+echo "[proxy] Raw username from workspace annotation: ${FULL_USERNAME}"
 # Extract username after last '/' and lowercase it
 if [[ "$FULL_USERNAME" == */* ]]; then
   FULL_USERNAME="${FULL_USERNAME##*/}"

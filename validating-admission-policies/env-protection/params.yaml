@@ -11,10 +11,11 @@ data:
   # Newline-separated list of environment variable names that users must not
   # set in workspace specs. These are consumed by security-sensitive runtime
   # scripts in the custom image and must not be overridden by users.
-  # Note: SPACES_WEBHOOK_USERNAME is not listed here because the mutating
-  # webhook already strips any user-supplied value and re-injects the
-  # authenticated username.
+  # WORKSPACE_CREATOR_USERNAME is injected by the WorkspaceAccessStrategy
+  # via mergeEnv/valueTemplate from the workspace.jupyter.org/created-by
+  # annotation. Users must not be allowed to override it.
   protectedEnvVars: |
+    WORKSPACE_CREATOR_USERNAME
     USER_HOME_BASE
     SLURM_SHARED_DIR
     SLURM_CONF_FILENAME

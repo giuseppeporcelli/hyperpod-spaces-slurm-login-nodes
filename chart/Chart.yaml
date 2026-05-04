@@ -1,5 +1,0 @@
-apiVersion: v2
-name: hyperpod-spaces-user-webhook
-description: Mutating webhook that injects UID/GID and supplemental groups into Jupyter workspaces
-version: 0.1.0
-appVersion: "1.0.0"
