@@ -28,7 +28,7 @@ set -euo pipefail
 source /usr/bin/config.sh
 
 if [ -z "${1:-}" ]; then
-  echo "FATAL: USERNAME argument required. Usage: resolve-user.sh <username>" >&2
+  echo "[resolve-user] FATAL: USERNAME argument required. Usage: resolve-user.sh <username>" >&2
   exit 1
 fi
 
@@ -43,20 +43,19 @@ resolve_via_sssd() {
   local uid_val gid_val primary_group supp_gids
 
   uid_val=$(id -u "$user" 2>/dev/null) || {
-    echo "ERROR: Cannot resolve UID for '${user}' via NSS" >&2; return 1
+    echo "[resolve-user] ERROR: Cannot resolve UID for '${user}' via NSS" >&2; return 1
   }
   gid_val=$(id -g "$user" 2>/dev/null) || {
-    echo "ERROR: Cannot resolve GID for '${user}' via NSS" >&2; return 1
+    echo "[resolve-user] ERROR: Cannot resolve GID for '${user}' via NSS" >&2; return 1
   }
   primary_group=$(id -gn "$user" 2>/dev/null) || primary_group="$user"
   supp_gids=$(id -G "$user" 2>/dev/null) || supp_gids=""
 
   echo "RESOLVED_UID=${uid_val}"
   echo "RESOLVED_GID=${gid_val}"
-  echo "RESOLVED_PRIMARY_GROUP=${primary_group}"
+  echo "RESOLVED_PRIMARY_GROUP=\"${primary_group}\""
 
   # Build supplemental group list (excluding primary)
-  local supp_gid_list="" supp_group_list=""
   read -ra gid_array <<< "$supp_gids"
   for gid in "${gid_array[@]}"; do
     [ "$gid" = "$gid_val" ] && continue
@@ -80,14 +79,14 @@ resolve_via_file() {
 
   # Validate the database file exists and has safe ownership
   if [ ! -f "$db_path" ]; then
-    echo "ERROR: User database not found: ${db_path}" >&2
+    echo "[resolve-user] ERROR: User database not found: ${db_path}" >&2
     return 1
   fi
 
   local file_owner file_perms
   file_owner=$(stat -c '%u:%g' "$db_path" 2>/dev/null || stat -f '%u:%g' "$db_path" 2>/dev/null)
   if [ "$file_owner" != "0:0" ]; then
-    echo "ERROR: ${db_path} must be owned by root:root (current: ${file_owner})" >&2
+    echo "[resolve-user] ERROR: ${db_path} must be owned by root:root (current: ${file_owner})" >&2
     return 1
   fi
 
@@ -97,7 +96,7 @@ resolve_via_file() {
   record=$(jq -c --arg u "$user" 'select(.username == $u)' "$db_path" 2>/dev/null | head -1)
 
   if [ -z "$record" ]; then
-    echo "ERROR: User '${user}' not found in ${db_path}" >&2
+    echo "[resolve-user] ERROR: User '${user}' not found in ${db_path}" >&2
     return 1
   fi
 
@@ -107,13 +106,13 @@ resolve_via_file() {
   primary_group=$(echo "$record" | jq -r '.group // .username')
 
   if [ "$uid_val" = "null" ] || [ "$gid_val" = "null" ]; then
-    echo "ERROR: uid or gid missing for '${user}' in ${db_path}" >&2
+    echo "[resolve-user] ERROR: uid or gid missing for '${user}' in ${db_path}" >&2
     return 1
   fi
 
   echo "RESOLVED_UID=${uid_val}"
   echo "RESOLVED_GID=${gid_val}"
-  echo "RESOLVED_PRIMARY_GROUP=${primary_group}"
+  echo "RESOLVED_PRIMARY_GROUP=\"${primary_group}\""
 
   # Supplemental groups: {"groupname": gid, ...}
   local supp_gid_list="" supp_group_list=""
@@ -142,7 +141,7 @@ case "${IDENTITY_PROVIDER}" in
     resolve_via_file "$USERNAME"
     ;;
   *)
-    echo "ERROR: Unknown IDENTITY_PROVIDER '${IDENTITY_PROVIDER}'. Must be 'sssd' or 'file'." >&2
+    echo "[resolve-user] ERROR: Unknown IDENTITY_PROVIDER '${IDENTITY_PROVIDER}'. Must be 'sssd' or 'file'." >&2
     exit 1
     ;;
 esac
