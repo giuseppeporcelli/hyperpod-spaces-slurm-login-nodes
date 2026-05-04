@@ -73,7 +73,9 @@ fi
 # ---------------------------------------------------------------------------
 echo "[user-configure] Supplemental groups: ${RESOLVED_SUPP_GROUPS:-none}"
 
-for entry in ${RESOLVED_SUPP_GROUPS}; do
+IFS='|' read -ra SUPP_ENTRIES <<< "${RESOLVED_SUPP_GROUPS}"
+for entry in "${SUPP_ENTRIES[@]}"; do
+  [ -z "$entry" ] && continue
   # Each entry is "groupname:gid"
   GROUP_NAME="${entry%%:*}"
   GID_SUPP="${entry##*:}"

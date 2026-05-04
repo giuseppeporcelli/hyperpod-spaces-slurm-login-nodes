@@ -14,7 +14,7 @@
 #   RESOLVED_GID=10001
 #   RESOLVED_PRIMARY_GROUP=alice
 #   RESOLVED_SUPP_GIDS="10100 10200"
-#   RESOLVED_SUPP_GROUPS="devs:10100 docker:10200"
+#   RESOLVED_SUPP_GROUPS="devs:10100|docker:10200"
 #
 # Usage:
 #   eval "$(resolve-user.sh <username>)"
@@ -56,6 +56,7 @@ resolve_via_sssd() {
   echo "RESOLVED_PRIMARY_GROUP=\"${primary_group}\""
 
   # Build supplemental group list (excluding primary)
+  local supp_gid_list="" supp_group_list=""
   read -ra gid_array <<< "$supp_gids"
   for gid in "${gid_array[@]}"; do
     [ "$gid" = "$gid_val" ] && continue
@@ -63,7 +64,7 @@ resolve_via_sssd() {
     gname=$(getent group "$gid" 2>/dev/null | cut -d: -f1) || true
     gname="${gname:-grp${gid}}"
     supp_gid_list="${supp_gid_list:+${supp_gid_list} }${gid}"
-    supp_group_list="${supp_group_list:+${supp_group_list} }${gname}:${gid}"
+    supp_group_list="${supp_group_list:+${supp_group_list}|}${gname}:${gid}"
   done
 
   echo "RESOLVED_SUPP_GIDS=\"${supp_gid_list}\""
@@ -119,12 +120,13 @@ resolve_via_file() {
   local supp_json
   supp_json=$(echo "$record" | jq -r '.supplemental_groups // empty | to_entries[] | "\(.key):\(.value)"' 2>/dev/null) || true
 
-  for entry in $supp_json; do
+  while IFS= read -r entry; do
+    [ -z "$entry" ] && continue
     local gname="${entry%%:*}"
     local gid="${entry##*:}"
     supp_gid_list="${supp_gid_list:+${supp_gid_list} }${gid}"
-    supp_group_list="${supp_group_list:+${supp_group_list} }${gname}:${gid}"
-  done
+    supp_group_list="${supp_group_list:+${supp_group_list}|}${gname}:${gid}"
+  done <<< "$supp_json"
 
   echo "RESOLVED_SUPP_GIDS=\"${supp_gid_list}\""
   echo "RESOLVED_SUPP_GROUPS=\"${supp_group_list}\""
