@@ -33,11 +33,16 @@ export HOME="${HOME_DIR}"
 echo "[proxy] Fixing permissions..."
 chmod 777 /var/log/studio /opt/amazon/sagemaker/user-data /home/sagemaker-user
 
-echo "[proxy] Running SSSD configuration..."
-/usr/bin/configure-sssd.sh
+# Start SSSD only when using the sssd identity provider
+if [ "${IDENTITY_PROVIDER}" = "sssd" ]; then
+  echo "[proxy] Running SSSD configuration..."
+  /usr/bin/configure-sssd.sh
 
-echo "[proxy] Waiting 2 seconds for SSSD to initialize..."
-sleep 2
+  echo "[proxy] Waiting 2 seconds for SSSD to initialize..."
+  sleep 2
+else
+  echo "[proxy] SSSD skipped (IDENTITY_PROVIDER=${IDENTITY_PROVIDER})"
+fi
 
 # Create local passwd/group entries so gosu can resolve the user.
 # gosu is statically compiled and reads /etc/passwd directly — it does

@@ -5,14 +5,15 @@
 # (/etc/passwd, /etc/group) so that statically compiled tools like gosu can
 # resolve the user.
 #
-# Resolves UID, GID, and supplemental groups from SSSD/NSS via the `id` command
-# rather than relying on environment variables. This ensures the local entries
-# match what the identity provider (AD/LDAP) has authoritative.
+# Identity resolution is delegated to resolve-user.sh, which supports two
+# providers controlled by IDENTITY_PROVIDER in config.sh:
+#
+#   "sssd" — resolves UID/GID/groups via NSS (SSSD must be running)
+#   "file" — resolves from a root-owned JSON-Lines file
 #
 # Usage:
 #   configure-user.sh <username>
 #
-# The username must be resolvable via NSS/SSSD.
 # Home directory is derived from USER_HOME_BASE (sourced from config.sh).
 
 set -euo pipefail
@@ -27,55 +28,55 @@ fi
 USERNAME="$1"
 HOME_DIR="${USER_HOME_BASE}/${USERNAME}"
 
-echo "[user-configure] Resolving user '${USERNAME}' via NSS (SSSD)..."
+echo "[user-configure] Resolving user '${USERNAME}' via provider '${IDENTITY_PROVIDER}'..."
 
-# Resolve UID and primary GID from SSSD/NSS
-UID_VAL=$(id -u "$USERNAME" 2>/dev/null) || { echo "[user-configure] ERROR: Cannot resolve UID for '${USERNAME}' via id"; exit 1; }
-GID_VAL=$(id -g "$USERNAME" 2>/dev/null) || { echo "[user-configure] ERROR: Cannot resolve GID for '${USERNAME}' via id"; exit 1; }
+# ---------------------------------------------------------------------------
+# Resolve identity attributes via the pluggable resolver
+# ---------------------------------------------------------------------------
+eval "$(/usr/bin/resolve-user.sh "${USERNAME}")"
+
+UID_VAL="${RESOLVED_UID}"
+GID_VAL="${RESOLVED_GID}"
+PRIMARY_GROUP="${RESOLVED_PRIMARY_GROUP}"
 
 echo "[user-configure] Resolved: uid=${UID_VAL} gid=${GID_VAL}"
-
-# Resolve primary group name
-PRIMARY_GROUP=$(id -gn "$USERNAME" 2>/dev/null) || PRIMARY_GROUP="${USERNAME}"
 echo "[user-configure] Primary group: ${PRIMARY_GROUP} (${GID_VAL})"
 
+# ---------------------------------------------------------------------------
 # Ensure primary group exists in /etc/group
+# ---------------------------------------------------------------------------
 if ! grep -q ":${GID_VAL}:" /etc/group 2>/dev/null; then
   echo "[user-configure] Adding group ${PRIMARY_GROUP}:x:${GID_VAL}"
   echo "${PRIMARY_GROUP}:x:${GID_VAL}:" >> /etc/group
 fi
 
+# ---------------------------------------------------------------------------
 # Ensure user exists in /etc/passwd
+# ---------------------------------------------------------------------------
 if ! grep -q "^${USERNAME}:" /etc/passwd; then
   echo "[user-configure] Adding passwd entry ${USERNAME}:x:${UID_VAL}:${GID_VAL}::${HOME_DIR}:/bin/bash"
   echo "${USERNAME}:x:${UID_VAL}:${GID_VAL}::${HOME_DIR}:/bin/bash" >> /etc/passwd
 fi
 
+# ---------------------------------------------------------------------------
 # Ensure user has a shadow entry so PAM doesn't treat the account as locked.
-# '*' means no local password (auth is handled by SSSD), but the account is not locked
-# (a locked account uses '!' or '!!' prefix).
+# '*' means no local password (auth is handled externally), but the account
+# is not locked (a locked account uses '!' or '!!' prefix).
+# ---------------------------------------------------------------------------
 if ! grep -q "^${USERNAME}:" /etc/shadow 2>/dev/null; then
   echo "[user-configure] Adding shadow entry for ${USERNAME}"
   echo "${USERNAME}:*:19000:0:99999:7:::" >> /etc/shadow
 fi
 
-# Resolve and configure supplemental groups from NSS
-# `id -G` returns all GIDs (including primary); group names are resolved
-# individually via getent to correctly handle names containing spaces.
-SUPP_GIDS=$(id -G "$USERNAME" 2>/dev/null) || SUPP_GIDS=""
+# ---------------------------------------------------------------------------
+# Configure supplemental groups
+# ---------------------------------------------------------------------------
+echo "[user-configure] Supplemental groups: ${RESOLVED_SUPP_GROUPS:-none}"
 
-echo "[user-configure] Supplemental GIDs: ${SUPP_GIDS:-none}"
-
-# Convert GID list to array (GIDs are numeric, so word-splitting is safe)
-read -ra GID_ARRAY <<< "$SUPP_GIDS"
-
-for GID_SUPP in "${GID_ARRAY[@]}"; do
-  # Skip the primary group — already handled
-  [ "$GID_SUPP" = "$GID_VAL" ] && continue
-
-  # Resolve group name from GID; fall back to a synthetic name
-  GROUP_NAME=$(getent group "$GID_SUPP" 2>/dev/null | cut -d: -f1) || true
-  GROUP_NAME="${GROUP_NAME:-grp${GID_SUPP}}"
+for entry in ${RESOLVED_SUPP_GROUPS}; do
+  # Each entry is "groupname:gid"
+  GROUP_NAME="${entry%%:*}"
+  GID_SUPP="${entry##*:}"
 
   if ! grep -q ":${GID_SUPP}:" /etc/group 2>/dev/null; then
     echo "[user-configure] Adding supplemental group ${GROUP_NAME}:x:${GID_SUPP}"

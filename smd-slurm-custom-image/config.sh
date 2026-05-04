@@ -65,7 +65,27 @@ MUNGE_KEY_DST="/etc/munge/munge.key"
 MUNGE_SOCKET_TIMEOUT="5"
 
 # ---------------------------------------------------------------------------
-# 5. SSSD / LDAP (configure-sssd.sh) — HARDCODED
+# 5. Identity provider selection — HARDCODED
+# ---------------------------------------------------------------------------
+# Controls how user UID, GID, and group memberships are resolved at runtime.
+#
+#   "sssd"  — (default) Resolve via SSSD/NSS connected to Active Directory
+#             over LDAPS. Requires SSSD packages and a working AD domain.
+#
+#   "file"  — Resolve from a JSON-Lines file stored at:
+#               ${SLURM_SHARED_DIR}/users.jsonl
+#             Each line is a JSON object:
+#               {"username":"alice","uid":10001,"gid":10001,"group":"alice","supplemental_groups":{"devs":10100,"docker":10200}}
+#             The file must be owned by root:root with mode 0600.
+#             SSSD is not started and its packages are not required.
+#
+IDENTITY_PROVIDER="sssd"
+
+# Path to the JSON-Lines user database (only used when IDENTITY_PROVIDER=file)
+USER_DB_PATH="${SLURM_SHARED_DIR}/users.jsonl"
+
+# ---------------------------------------------------------------------------
+# 5a. SSSD / LDAP (configure-sssd.sh) — HARDCODED
 # ---------------------------------------------------------------------------
 SSSD_ENABLED="true"
 SSSD_DOMAIN="default"

@@ -7,7 +7,7 @@ This project turns HyperPod Spaces workspaces into fully functional Slurm login 
 To make this work, two pieces collaborate at runtime:
 
 1. A `WorkspaceAccessStrategy` patch on the HyperPod Spaces platform injects the workspace creator's username into each pod as the `WORKSPACE_CREATOR_USERNAME` environment variable. The value is derived from the `workspace.jupyter.org/created-by` annotation, which is set by the platform itself and cannot be overridden by users. This is the mechanism that ties a workspace to a real user identity without requiring any manual configuration.
-2. Custom SageMaker Distribution images (`smd-slurm-custom-image/`) extend the official base images with Slurm client tooling, MUNGE authentication, and SSSD/LDAP integration. At container startup, the injected username is used to resolve the user's UID, GID, and supplemental groups from the identity provider, set up the home directory on the shared file system, initialize the Slurm client, and drop privileges to the correct user before launching the IDE.
+2. Custom SageMaker Distribution images (`smd-slurm-custom-image/`) extend the official base images with Slurm client tooling, MUNGE authentication, and pluggable identity resolution. At container startup, the injected username is used to resolve the user's UID, GID, and supplemental groups from the configured identity provider — either SSSD/NSS connected to Active Directory over LDAPS, or a root-owned JSON-Lines file on the shared filesystem — set up the home directory on the shared file system, initialize the Slurm client, and drop privileges to the correct user before launching the IDE.
 
 The result is a workspace that behaves like an SSH session to a traditional Slurm login node: the user lands in their own home directory on the shared file system, has their correct group memberships, and can interact with the Slurm scheduler immediately.
 
@@ -54,7 +54,8 @@ The custom images extend the official SageMaker Distribution base images with:
 - Slurm client binaries (compiled from source) for submitting jobs to an HPC cluster
 - MUNGE authentication daemon for Slurm's auth protocol
 - SSSD integration for Active Directory / LDAP user authentication
-- Proxy entrypoint scripts that set up the Linux user identity at container startup. They verify that `WORKSPACE_CREATOR_USERNAME` is present, then extract and normalize the username (stripping any path prefix, lowercasing, and removing the `@domain` suffix), and use SSSD/NSS to resolve the user's UID, GID, and supplemental groups from the identity provider (Active Directory / LDAP). The home directory is derived from `USER_HOME_BASE` (hardcoded in `config.sh`).
+- Pluggable identity resolution (`resolve-user.sh`) supporting SSSD/NSS or a JSON-Lines user database file
+- Proxy entrypoint scripts that set up the Linux user identity at container startup. They verify that `WORKSPACE_CREATOR_USERNAME` is present, then extract and normalize the username (stripping any path prefix, lowercasing, and removing the `@domain` suffix), and delegate identity resolution to `resolve-user.sh` which resolves the user's UID, GID, and supplemental groups from the configured provider. The home directory is derived from `USER_HOME_BASE` (hardcoded in `config.sh`).
 
 ### Image Variants
 
@@ -105,7 +106,16 @@ The configuration is organized into six sections:
 | `MUNGE_KEY_FILENAME` | `munge.key` | MUNGE key filename |
 | `MUNGE_SOCKET_TIMEOUT` | `5` | Seconds to wait for the MUNGE socket at startup |
 
-#### 5. SSSD / LDAP (`configure-sssd.sh`) — hardcoded
+#### 5. Identity provider — hardcoded
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `IDENTITY_PROVIDER` | `sssd` | Controls how UID/GID/groups are resolved. `sssd` uses SSSD/NSS (requires AD/LDAP). `file` reads from a root-owned JSON-Lines file at `USER_DB_PATH`. |
+| `USER_DB_PATH` | `${SLURM_SHARED_DIR}/users.jsonl` | Path to the JSON-Lines user database (only used when `IDENTITY_PROVIDER=file`) |
+
+#### 5a. SSSD / LDAP (`configure-sssd.sh`) — hardcoded
+
+These variables are only relevant when `IDENTITY_PROVIDER` is set to `sssd`.
 
 | Variable | Value | Description |
 |----------|-------|-------------|
@@ -159,10 +169,11 @@ The runtime scripts expect a shared filesystem (e.g. FSx for Lustre or FSx for O
 | `munge.key` | `configure-slurm.sh` | Shared MUNGE authentication key (must match the controller's key) |
 | `ldaps.crt` | `configure-sssd.sh` | LDAPS CA certificate for the Active Directory / LDAP server |
 | `ldap_authtok` | `configure-sssd.sh` | LDAP bind password/token (only required if `SSSD_LDAP_AUTHTOK` env var is not set) |
+| `users.jsonl` | `resolve-user.sh` | JSON-Lines user database (only when `IDENTITY_PROVIDER=file`) |
 
 The filenames for the Slurm files and the LDAPS certificate path are hardcoded in `config.sh`.
 
-> The SSSD-related files (`ldaps.crt`, `ldap_authtok`) are only required when `SSSD_ENABLED` is set to `true` (the default). If SSSD is disabled, only the four Slurm files are needed.
+> When `IDENTITY_PROVIDER=sssd` (the default), the SSSD-related files (`ldaps.crt`, `ldap_authtok`) are required and `users.jsonl` is not needed. When `IDENTITY_PROVIDER=file`, only the four Slurm files and `users.jsonl` are needed — the SSSD files can be omitted.
 
 The directory and all files within it must be owned by `root:root` with read permissions for others removed. This prevents unprivileged users from reading sensitive material such as the MUNGE key and LDAP credentials. The runtime scripts run as root (or via `sudo`) and can still access the files.
 
@@ -180,9 +191,29 @@ Expected directory layout:
 ├── accounting.conf               -rw------- root:root
 ├── gres.conf                     -rw------- root:root
 ├── munge.key                     -rw------- root:root
-├── ldaps.crt                     -rw------- root:root   # only when SSSD is enabled
-└── ldap_authtok                  -rw------- root:root   # only when SSSD is enabled and SSSD_LDAP_AUTHTOK is not set
+├── ldaps.crt                     -rw------- root:root   # only when IDENTITY_PROVIDER=sssd
+├── ldap_authtok                  -rw------- root:root   # only when IDENTITY_PROVIDER=sssd and SSSD_LDAP_AUTHTOK is not set
+└── users.jsonl                   -rw------- root:root   # only when IDENTITY_PROVIDER=file
 ```
+
+#### `users.jsonl` Format (file-based identity provider)
+
+When `IDENTITY_PROVIDER=file`, user identity is resolved from a JSON-Lines file where each line is a self-contained JSON object describing one user:
+
+```json
+{"username":"alice","uid":10001,"gid":10001,"group":"alice","supplemental_groups":{"devs":10100,"docker":10200}}
+{"username":"bob","uid":10002,"gid":10002,"group":"bob","supplemental_groups":{"devs":10100}}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `username` | string | yes | Login name (must match the normalized `WORKSPACE_CREATOR_USERNAME`) |
+| `uid` | integer | yes | Numeric UID |
+| `gid` | integer | yes | Numeric primary GID |
+| `group` | string | no | Primary group name (defaults to `username` if omitted) |
+| `supplemental_groups` | object | no | Map of group name → GID for supplemental group memberships |
+
+The file must be owned by `root:root` with mode `0600`. `resolve-user.sh` validates ownership before reading and will refuse to proceed if the file is not root-owned.
 
 ### Build Process
 
@@ -202,7 +233,8 @@ Both Dockerfiles follow the same steps:
 5. Copy runtime scripts into `/usr/bin/`:
    - `configure-slurm.sh` — runtime Slurm/MUNGE initialization
    - `configure-sssd.sh` — runtime SSSD/LDAP configuration
-   - `configure-user.sh` — creates local passwd/group entries from NSS/SSSD
+   - `configure-user.sh` — creates local passwd/group entries using the pluggable identity resolver
+   - `resolve-user.sh` — pluggable identity resolver (SSSD/NSS or JSON-Lines file)
    - `configure-sudoers.sh` — hardens sudoers and grants group-based sudo
    - `configure-ras.sh` — stops the root-owned remote access server and restarts it as the target user
    - `start-code-editor-proxy.sh` — Code Editor entrypoint
@@ -230,9 +262,18 @@ Configures SSSD for Active Directory / LDAP authentication:
 2. Skips entirely if `SSSD_ENABLED` is not `true`.
 3. Installs the LDAPS certificate, writes `sssd.conf`, configures SSH, enables automatic home directory creation, and starts SSSD.
 
+#### `resolve-user.sh`
+
+Pluggable identity resolver that abstracts how UID, GID, primary group, and supplemental groups are looked up for a given username. Controlled by `IDENTITY_PROVIDER` in `config.sh`:
+
+- `sssd` — resolves via `id` and `getent` (requires SSSD/NSS to be running).
+- `file` — parses the JSON-Lines file at `USER_DB_PATH` using `jq`. Validates that the file is owned by `root:root` before reading.
+
+The script prints shell variable assignments to stdout (`RESOLVED_UID`, `RESOLVED_GID`, `RESOLVED_PRIMARY_GROUP`, `RESOLVED_SUPP_GIDS`, `RESOLVED_SUPP_GROUPS`) intended to be `eval`'d by the caller.
+
 #### `configure-user.sh`
 
-Ensures the user and group entries exist in local databases (`/etc/passwd`, `/etc/group`) so that statically compiled tools like `gosu` can resolve the user. Accepts the username as a positional argument (passed by the proxy entrypoint scripts after normalization) and resolves UID, GID, and supplemental groups from SSSD/NSS via the `id` command.
+Ensures the user and group entries exist in local databases (`/etc/passwd`, `/etc/group`) so that statically compiled tools like `gosu` can resolve the user. Accepts the username as a positional argument (passed by the proxy entrypoint scripts after normalization) and delegates identity resolution to `resolve-user.sh`.
 
 #### `configure-sudoers.sh`
 
@@ -247,8 +288,8 @@ These are the container entrypoints. They consume the platform-injected environm
 
 1. Verify that `WORKSPACE_CREATOR_USERNAME` is set and non-empty, refusing to start otherwise. Then extract the username after the last `/` (if present), lowercase it, and strip the `@domain` suffix. The home directory is derived from `USER_HOME_BASE` (hardcoded in `config.sh`).
 2. Fix permissions on SageMaker-specific directories.
-3. Run `configure-sssd.sh` to set up LDAP authentication.
-4. Run `configure-user.sh <username>` to create local passwd/group entries (UID/GID/groups resolved via SSSD/NSS).
+3. Run `configure-sssd.sh` to set up LDAP authentication (skipped when `IDENTITY_PROVIDER` is not `sssd`).
+4. Run `configure-user.sh <username>` to create local passwd/group entries (UID/GID/groups resolved via the configured identity provider).
 5. Run `configure-sudoers.sh` to configure sudo access.
 6. Run `configure-slurm.sh` to initialize the Slurm client.
 7. Replace `/home/sagemaker-user` with a symlink to the user's home directory on the shared filesystem, then `cd` into it.
@@ -436,9 +477,9 @@ Workspace Pod starts with custom image
   ├─ All scripts source /usr/bin/config.sh (hardcoded security-sensitive values)
   ├─ Proxy script normalizes WORKSPACE_CREATOR_USERNAME (strip prefix, lowercase, remove @domain)
   │   and derives home from USER_HOME_BASE
-  ├─ configure-sssd.sh sets up LDAP authentication
+  ├─ configure-sssd.sh sets up LDAP authentication (skipped when IDENTITY_PROVIDER ≠ sssd)
   ├─ configure-user.sh receives the normalized username as an argument,
-  │   resolves UID/GID/groups via SSSD/NSS, and creates local entries
+  │   delegates to resolve-user.sh (SSSD/NSS or JSONL file), and creates local entries
   ├─ configure-sudoers.sh grants group-based sudo access
   │   (full sudo for SUDOERS_GROUPS, command-limited for SUDOERS_RESTRICTED_GROUPS)
   ├─ configure-slurm.sh copies config from shared mount, starts MUNGE
