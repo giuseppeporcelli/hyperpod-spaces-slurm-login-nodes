@@ -16,9 +16,11 @@ if [[ "$FULL_USERNAME" == */* ]]; then
 fi
 FULL_USERNAME="${FULL_USERNAME,,}"
 echo "[proxy] Username after prefix strip and lowercase: ${FULL_USERNAME}"
-# Strip domain suffix: remove @domain
+# Strip domain suffix: remove @domain, or fallback to last '-' as separator
 if [[ "$FULL_USERNAME" == *@* ]]; then
   USERNAME="${FULL_USERNAME%%@*}"
+elif [[ "$FULL_USERNAME" == *-* ]]; then
+  USERNAME="${FULL_USERNAME%-*}"
 else
   USERNAME="$FULL_USERNAME"
 fi
