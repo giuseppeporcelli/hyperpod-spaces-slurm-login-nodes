@@ -6,95 +6,42 @@ This project turns HyperPod Spaces workspaces into fully functional Slurm login 
 
 To make this work, two pieces collaborate at runtime:
 
-1. A Kubernetes mutating admission webhook (`hyperpod-spaces-user-webhook`) intercepts workspace creation and update events and injects the requesting user's username into the pod spec as an environment variable. This is the mechanism that ties a workspace to a real user identity without requiring any manual configuration.
+1. A `WorkspaceAccessStrategy` patch on the HyperPod Spaces platform injects the workspace creator's username into each pod as the `WORKSPACE_CREATOR_USERNAME` environment variable. The value is derived from the `workspace.jupyter.org/created-by` annotation, which is set by the platform itself and cannot be overridden by users. This is the mechanism that ties a workspace to a real user identity without requiring any manual configuration.
 2. Custom SageMaker Distribution images (`smd-slurm-custom-image/`) extend the official base images with Slurm client tooling, MUNGE authentication, and SSSD/LDAP integration. At container startup, the injected username is used to resolve the user's UID, GID, and supplemental groups from the identity provider, set up the home directory on the shared file system, initialize the Slurm client, and drop privileges to the correct user before launching the IDE.
 
 The result is a workspace that behaves like an SSH session to a traditional Slurm login node: the user lands in their own home directory on the shared file system, has their correct group memberships, and can interact with the Slurm scheduler immediately.
 
 ---
 
-## Webhook Setup
+## Username Injection via WorkspaceAccessStrategy
 
-### What the Webhook Does
+### How It Works
 
-The webhook is a Go binary that runs as a TLS server on port 8443 inside the cluster. It registers itself as a `MutatingWebhookConfiguration` targeting the `workspaces.workspace.jupyter.org` CRD on `CREATE` and `UPDATE` operations.
+The platform's built-in `WorkspaceAccessStrategy` injects the creator's username into each workspace pod. The `mergeEnv` mechanism with a `valueTemplate` pulls the value from the `workspace.jupyter.org/created-by` annotation — a trusted, platform-set annotation that users cannot override.
 
-When a workspace is created or updated:
+### Applying the Patch
 
-1. It extracts the requesting user's username from the Kubernetes `AdmissionReview` request.
-2. Strips any user-supplied `SPACES_WEBHOOK_USERNAME` from the existing env vars to prevent impersonation.
-3. Builds a set of JSON Patch operations that inject environment variables into the workspace pod spec:
-   - `SPACES_WEBHOOK_USERNAME` — the raw username from the admission request
-
-At container startup, the custom image's proxy scripts first verify that `SPACES_WEBHOOK_USERNAME` is set (refusing to start if missing), then normalize the username (extracting the part after the last `/`, lowercasing, and stripping the `@domain` suffix), and derive the home directory from `USER_HOME_BASE` (hardcoded in `config.sh`, defaults to `/home`). SSSD/NSS is used to resolve the user's UID, GID, and supplemental groups from the identity provider (Active Directory / LDAP).
-
-### Kubernetes Resources
-
-The Helm chart (`chart/`) deploys the following resources into the `jupyter-k8s-system` namespace:
-
-| Resource | Template | Purpose |
-|----------|----------|---------|
-| Deployment | `deployment.yaml` | Runs the webhook binary, mounts TLS certs from a Secret, exposes port 8443 |
-| Service | `service.yaml` | Exposes the Deployment on port 443 → 8443 so the API server can reach `/mutate` |
-| MutatingWebhookConfiguration | `webhookconfiguration.yaml` | Tells the API server to send `Workspace` admission reviews to the Service. Uses `cert-manager.io/inject-ca-from` to auto-inject the CA bundle. `failurePolicy: Ignore` ensures workspace creation isn't blocked if the webhook is down. |
-| Certificate | `certificate.yaml` | cert-manager Certificate that generates a TLS keypair for the webhook Service DNS name and stores it in a Secret |
-| ServiceAccount | `serviceaccount.yaml` | Identity for the webhook pod |
-
-### TLS & cert-manager
-
-The webhook requires TLS because the Kubernetes API server only calls webhooks over HTTPS. cert-manager handles this automatically:
-
-1. The `Certificate` resource requests a cert for `<release>-hyperpod-spaces-user-webhook.jupyter-k8s-system.svc`.
-2. cert-manager creates a `Secret` containing `tls.crt` and `tls.key`.
-3. The Deployment mounts this Secret at `/certs`.
-4. The `MutatingWebhookConfiguration` annotation `cert-manager.io/inject-ca-from` tells cert-manager to patch the webhook's `caBundle` field with the issuer's CA, so the API server trusts the webhook's certificate.
-
-A cert-manager `Issuer` (or `ClusterIssuer`) must already exist in the namespace. The issuer name is configurable via `certManager.issuerName` in `values.yaml`.
-
-### Prerequisites
-
-- Docker
-- `kubectl` connected to your target cluster
-- Helm 3
-- cert-manager installed on the cluster (with an Issuer created)
-- FSx OpenZFS file system with per-user home directories
-- SSSD configured in the custom image for user identity resolution (see [Custom Images](#custom-images-smd-slurm-custom-image))
-
-### Helm Values
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `image.repository` | `414900938744.dkr.ecr.us-west-2.amazonaws.com/hyperpod-spaces-user-webhook` | Container image repository |
-| `image.tag` | `latest` | Image tag |
-| `image.pullPolicy` | `Always` | Image pull policy |
-| `replicas` | `1` | Number of webhook pod replicas |
-| `namespace` | `jupyter-k8s-system` | Namespace to deploy into |
-| `certManager.issuerName` | `jupyter-k8s-selfsigned-issuer` | cert-manager Issuer name |
-| `certManager.issuerKind` | `Issuer` | cert-manager issuer kind (`Issuer` or `ClusterIssuer`) |
-| `serviceAccount.annotations` | `{}` | Annotations for the ServiceAccount |
-
-### Deploying the Webhook
+Run the following command to patch the existing `WorkspaceAccessStrategy`:
 
 ```sh
-# Set environment
-export AWS_ACCOUNT_ID=<your-account-id>
-export AWS_REGION=us-west-2
-
-# Create ECR repository
-aws ecr create-repository --repository-name hyperpod-spaces-user-webhook --region $AWS_REGION
-
-# Log into ECR
-aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-
-# Build and push the webhook image
-docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/hyperpod-spaces-user-webhook:latest .
-docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/hyperpod-spaces-user-webhook:latest
-
-# Install via Helm
-helm install hyperpod-spaces-user-webhook ./chart \
-  --set image.repository=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/hyperpod-spaces-user-webhook \
-  --set image.tag=latest
+kubectl patch workspaceaccessstrategy hyperpod-access-strategy \
+  -n jupyter-k8s-system \
+  --type=json \
+  -p '[{
+    "op": "add",
+    "path": "/spec/deploymentModifications/podModifications/primaryContainerModifications/mergeEnv/-",
+    "value": {
+      "name": "WORKSPACE_CREATOR_USERNAME",
+      "valueTemplate": "{{ index .Workspace.Annotations \"workspace.jupyter.org/created-by\" }}"
+    }
+  }]'
 ```
+
+This adds a `WORKSPACE_CREATOR_USERNAME` environment variable to every workspace pod created through the `hyperpod-access-strategy`. The value is resolved at pod creation time from the workspace's `created-by` annotation.
+
+### Security Model
+
+The `workspace.jupyter.org/created-by` annotation is set by the Jupyter workspace controller when the workspace is created. Users cannot modify it. The `ValidatingAdmissionPolicy` for environment variable protection (see [Env Protection](#environment-variable-protection-validating-admission-policiesenv-protection)) additionally blocks users from setting `WORKSPACE_CREATOR_USERNAME` in their workspace `spec.env`, providing defense-in-depth.
 
 ---
 
@@ -107,7 +54,7 @@ The custom images extend the official SageMaker Distribution base images with:
 - Slurm client binaries (compiled from source) for submitting jobs to an HPC cluster
 - MUNGE authentication daemon for Slurm's auth protocol
 - SSSD integration for Active Directory / LDAP user authentication
-- Proxy entrypoint scripts that set up the Linux user identity at container startup. They verify that `SPACES_WEBHOOK_USERNAME` is present, then extract and normalize the username (stripping any path prefix, lowercasing, and removing the `@domain` suffix), and use SSSD/NSS to resolve the user's UID, GID, and supplemental groups from the identity provider (Active Directory / LDAP). The home directory is derived from `USER_HOME_BASE` (hardcoded in `config.sh`).
+- Proxy entrypoint scripts that set up the Linux user identity at container startup. They verify that `WORKSPACE_CREATOR_USERNAME` is present, then extract and normalize the username (stripping any path prefix, lowercasing, and removing the `@domain` suffix), and use SSSD/NSS to resolve the user's UID, GID, and supplemental groups from the identity provider (Active Directory / LDAP). The home directory is derived from `USER_HOME_BASE` (hardcoded in `config.sh`).
 
 ### Image Variants
 
@@ -296,9 +243,9 @@ Removes the blanket `NOPASSWD` rule and configures two tiers of sudo access (all
 
 #### `start-jupyterlab-proxy.sh` / `start-code-editor-proxy.sh`
 
-These are the container entrypoints. They consume the webhook-injected environment variables to set up the user identity before launching the IDE:
+These are the container entrypoints. They consume the platform-injected environment variable to set up the user identity before launching the IDE:
 
-1. Verify that `SPACES_WEBHOOK_USERNAME` is set and non-empty, refusing to start otherwise. Then extract the username after the last `/` (if present), lowercase it, and strip the `@domain` suffix. The home directory is derived from `USER_HOME_BASE` (hardcoded in `config.sh`).
+1. Verify that `WORKSPACE_CREATOR_USERNAME` is set and non-empty, refusing to start otherwise. Then extract the username after the last `/` (if present), lowercase it, and strip the `@domain` suffix. The home directory is derived from `USER_HOME_BASE` (hardcoded in `config.sh`).
 2. Fix permissions on SageMaker-specific directories.
 3. Run `configure-sssd.sh` to set up LDAP authentication.
 4. Run `configure-user.sh <username>` to create local passwd/group entries (UID/GID/groups resolved via SSSD/NSS).
@@ -327,7 +274,7 @@ export SMD_SLURM_IMAGE_TAG=0.1.0
 # Create ECR repository
 aws ecr create-repository --repository-name smd-slurm --region $AWS_REGION
 
-# Log into ECR (skip if already logged in from webhook build)
+# Log into ECR
 aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
 # CPU variant
@@ -390,7 +337,7 @@ kubectl get workspacetemplate code-editor-smd-slurm-custom -n jupyter-k8s-system
 
 ## Validating Admission Policies (`validating-admission-policies/`)
 
-The project includes three Kubernetes `ValidatingAdmissionPolicy` resources (requires Kubernetes 1.30+) that enforce workspace integrity without requiring the webhook to handle validation. Each policy lives in its own subdirectory with the standard three-file structure (`policy.yaml`, `binding.yaml`, `params.yaml`).
+The project includes three Kubernetes `ValidatingAdmissionPolicy` resources (requires Kubernetes 1.30+) that enforce workspace integrity. Each policy lives in its own subdirectory with the standard three-file structure (`policy.yaml`, `binding.yaml`, `params.yaml`).
 
 ### Protected PVC (`validating-admission-policies/protected-pvc/`)
 
@@ -430,7 +377,7 @@ To add a new template or update an expected command, edit `command-integrity/par
 
 ### Environment Variable Protection (`validating-admission-policies/env-protection/`)
 
-Prevents users from setting security-sensitive environment variables in their workspace specs when the workspace uses one of the configured templates. This blocks privilege escalation via env var injection (e.g. overriding `SUDOERS_GROUPS` or `USER_HOME_BASE`). Note that `SPACES_WEBHOOK_USERNAME` is intentionally not in this list — the mutating webhook already strips any user-supplied value and re-injects the authenticated username, so the webhook alone is sufficient protection for that variable.
+Prevents users from setting security-sensitive environment variables in their workspace specs when the workspace uses one of the configured templates. This blocks privilege escalation via env var injection (e.g. overriding `SUDOERS_GROUPS` or `USER_HOME_BASE`). `WORKSPACE_CREATOR_USERNAME` is included in the protected list — while the value is injected by the platform via `mergeEnv`/`valueTemplate` (not user-controllable through that path), this policy provides defense-in-depth by blocking any attempt to set it in `spec.env`.
 
 The policy is scoped to specific templates: it first checks whether the workspace's `workspace.jupyter.org/template-name` label matches one of the template names listed in the `allowedTemplates` parameter. If the template is not in the list (or the label is missing), the policy allows the request. For matching templates, it then checks whether any env var in `spec.env` appears in the protected list and denies the request if so.
 
@@ -467,28 +414,27 @@ User creates Workspace
 K8s API Server
   ├─► ValidatingAdmissionPolicy — Protected PVC (CEL)
   │     └─ If workspace uses protected FSx PVC, validates template-name label
-  │         └─ Denies if template not in allowed list (see validating-admission-policies/protected-pvc/)
+  │         └─ Denies if template not in allowed list
   │
   ├─► ValidatingAdmissionPolicy — Command Integrity (CEL)
   │     └─ If workspace uses a configured template, validates container command
-  │         └─ Denies if command does not contain the required script (see validating-admission-policies/command-integrity/)
+  │         └─ Denies if command does not contain the required script
   │
-  ├─► ValidatingAdmissionPolicy — Env Protection (CEL)
-  │     └─ If workspace uses a configured template, checks spec.env for security-sensitive variable names
-  │         └─ Denies if any protected env var is set by the user (see validating-admission-policies/env-protection/)
-  │
-  └─► MutatingWebhookConfiguration
+  └─► ValidatingAdmissionPolicy — Env Protection (CEL)
+        └─ If workspace uses a configured template, checks spec.env for
+           security-sensitive variable names (including WORKSPACE_CREATOR_USERNAME)
+            └─ Denies if any protected env var is set by the user
         │
         ▼
-hyperpod-spaces-user-webhook /mutate
-  ├─ Strips any user-supplied SPACES_WEBHOOK_USERNAME from existing env vars
-  └─ Returns JSON Patch adding SPACES_WEBHOOK_USERNAME env var (raw username from AdmissionReview)
+WorkspaceAccessStrategy (hyperpod-access-strategy)
+  └─ mergeEnv injects WORKSPACE_CREATOR_USERNAME from
+     workspace.jupyter.org/created-by annotation
         │
         ▼
 Workspace Pod starts with custom image
-  ├─ Proxy script verifies SPACES_WEBHOOK_USERNAME is set (refuses to start if missing)
+  ├─ Proxy script verifies WORKSPACE_CREATOR_USERNAME is set (refuses to start if missing)
   ├─ All scripts source /usr/bin/config.sh (hardcoded security-sensitive values)
-  ├─ Proxy script normalizes SPACES_WEBHOOK_USERNAME (strip prefix, lowercase, remove @domain)
+  ├─ Proxy script normalizes WORKSPACE_CREATOR_USERNAME (strip prefix, lowercase, remove @domain)
   │   and derives home from USER_HOME_BASE
   ├─ configure-sssd.sh sets up LDAP authentication
   ├─ configure-user.sh receives the normalized username as an argument,
