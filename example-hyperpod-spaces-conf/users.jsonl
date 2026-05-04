@@ -1,0 +1,3 @@
+{"username":"alice","uid":10001,"gid":10001,"group":"alice","supplemental_groups":{"devs":10100,"docker":10200,"ClusterDev":10300}}
+{"username":"bob","uid":10002,"gid":10002,"group":"bob","supplemental_groups":{"devs":10100}}
+{"username":"carol","uid":10003,"gid":10003,"group":"carol","supplemental_groups":{"ClusterAdmin":10400,"devs":10100,"docker":10200}}

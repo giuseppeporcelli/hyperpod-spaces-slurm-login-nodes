@@ -1,0 +1,4 @@
+-----BEGIN CERTIFICATE-----
+EXAMPLE ONLY — replace with your actual LDAPS CA certificate.
+Export it from your Active Directory / LDAP server or Certificate Authority.
+-----END CERTIFICATE-----

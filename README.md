@@ -175,6 +175,8 @@ The filenames for the Slurm files and the LDAPS certificate path are hardcoded i
 
 > When `IDENTITY_PROVIDER=sssd` (the default), the SSSD-related files (`ldaps.crt`, `ldap_authtok`) are required and `users.jsonl` is not needed. When `IDENTITY_PROVIDER=file`, only the four Slurm files and `users.jsonl` are needed — the SSSD files can be omitted.
 
+An example directory with placeholder files is provided at [`example-hyperpod-spaces-conf/`](example-hyperpod-spaces-conf/) for reference.
+
 The directory and all files within it must be owned by `root:root` with read permissions for others removed. This prevents unprivileged users from reading sensitive material such as the MUNGE key and LDAP credentials. The runtime scripts run as root (or via `sudo`) and can still access the files.
 
 ```sh
