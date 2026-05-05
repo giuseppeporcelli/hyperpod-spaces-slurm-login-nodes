@@ -45,6 +45,13 @@ sleep 2
 echo "[proxy] Running user/group configuration..."
 /usr/bin/configure-user.sh "${USERNAME}"
 
+echo "[proxy] Ensuring home directory exists with correct ownership..."
+if [ ! -d "$HOME_DIR" ]; then
+  mkdir -p "$HOME_DIR"
+fi
+chown "${USERNAME}:$(id -gn "${USERNAME}")" "$HOME_DIR"
+chmod 750 "$HOME_DIR"
+
 echo "[proxy] Running sudoers configuration..."
 /usr/bin/configure-sudoers.sh
 
