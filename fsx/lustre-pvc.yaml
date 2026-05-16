@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fsx-lustre-claim
+  namespace: ${NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: ${FSX_LUSTRE_STORAGE_CAPACITY}
+  storageClassName: fsx-lustre-sc
+  volumeMode: Filesystem
+  volumeName: fsx-lustre-pv-$NAMESPACE

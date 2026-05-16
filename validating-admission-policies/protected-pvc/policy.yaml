@@ -13,12 +13,14 @@ spec:
   validations:
     - expression: >-
         !has(object.spec.volumes) ||
-        !object.spec.volumes.exists(v, v.persistentVolumeClaimName == params.data.pvcName) ||
+        !object.spec.volumes.exists(v,
+          ('\n' + params.data.protectedPvcNames + '\n').contains('\n' + v.persistentVolumeClaimName + '\n')
+        ) ||
         (has(object.metadata.labels) &&
          'workspace.jupyter.org/template-name' in object.metadata.labels &&
          ('\n' + params.data.allowedTemplates + '\n').contains('\n' + object.metadata.labels['workspace.jupyter.org/template-name'] + '\n'))
       messageExpression: >-
-        'workspace uses PVC "' + params.data.pvcName + '" but template "' +
+        'workspace mounts a protected PVC but template "' +
         (has(object.metadata.labels) && 'workspace.jupyter.org/template-name' in object.metadata.labels
           ? object.metadata.labels['workspace.jupyter.org/template-name']
           : '<missing>') +

@@ -35,7 +35,10 @@ spec:
   defaultVolumes:
     - name: home-dir
       mountPath: /home
-      persistentVolumeClaimName: fsx-claim
+      persistentVolumeClaimName: fsx-openzfs-claim
+    - name: shared-data
+      mountPath: /fsx
+      persistentVolumeClaimName: fsx-lustre-claim
   primaryStorage:
     defaultMountPath: /mnt/ebs-volume
     defaultSize: 5Gi

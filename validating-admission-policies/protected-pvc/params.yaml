@@ -4,7 +4,11 @@ metadata:
   name: protected-pvc-params
   namespace: default
 data:
-  pvcName: "fsx-claim"
+  # Newline-separated list of PVC names that are protected.
+  # Only workspaces using an allowed template may mount these PVCs.
+  protectedPvcNames: |
+    fsx-openzfs-claim
+    fsx-lustre-claim
   allowedTemplates: |
     jl-smd-slurm-custom
     ce-smd-slurm-custom

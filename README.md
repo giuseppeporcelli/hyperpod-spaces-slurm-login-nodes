@@ -342,26 +342,46 @@ docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/smd-slurm:${SMD_SL
 
 ## Shared Filesystem Setup (`fsx/`)
 
-The workspace templates mount a shared filesystem (FSx for Lustre) into each pod at `/home`. This provides persistent user home directories and the `.hyperpod_spaces_conf` directory containing Slurm/SSSD configuration files.
+The workspace templates mount two shared filesystems into each pod:
 
-The `fsx/` directory contains Kubernetes manifests for static provisioning of an existing FSx for Lustre filesystem as a PersistentVolumeClaim. See [`fsx/README.md`](fsx/README.md) for detailed instructions.
+| Filesystem | Mount Path | Purpose |
+|-----------|------------|---------|
+| FSx for OpenZFS | `/home` | User home directories and `.hyperpod_spaces_conf` (Slurm/SSSD config) |
+| FSx for Lustre | `/fsx` | Shared high-throughput storage for ML datasets, checkpoints, and training artifacts |
 
-Each namespace that runs workspaces needs its own PV/PVC pair. The PV name includes the namespace (`fsx-pv-$NAMESPACE`) to avoid conflicts. All PVs can point to the same underlying FSx filesystem since FSx for Lustre supports `ReadWriteMany` access.
+The `fsx/` directory contains Kubernetes manifests for static provisioning of both filesystems. See [`fsx/README.md`](fsx/README.md) for detailed instructions.
+
+Each namespace that runs workspaces needs its own PV/PVC pairs for both volumes. The PV names include the namespace to avoid conflicts. Both FSx for OpenZFS and FSx for Lustre support `ReadWriteMany` access, so all PVs can point to the same underlying filesystems.
 
 ### Quick Setup
 
 ```sh
 export NAMESPACE=hyperpod-ns-team-a
-export FSX_FILESYSTEM_ID=fs-XXXXXXXXXX
-export FSX_DNS_NAME=fs-XXXXXXXXXX.fsx.us-west-2.amazonaws.com
-export FSX_MOUNT_NAME=k7f3mp9x
 
-kubectl apply -f fsx/fsx-sc.yaml
-envsubst < fsx/fsx-pv.yaml | kubectl apply -f -
-envsubst < fsx/fsx-pvc.yaml | kubectl apply -f -
+# OpenZFS (home directories)
+export FSX_OPENZFS_VOLUME_ID=fsvol-XXXXXXXXXXXXXXXXX
+export FSX_OPENZFS_DNS_NAME=fs-XXXXXXXXXX.fsx.us-west-2.amazonaws.com
+export FSX_OPENZFS_MOUNT_NAME=/fsx/home
+export FSX_OPENZFS_STORAGE_CAPACITY=512Gi
+
+# Lustre (shared ML data)
+export FSX_LUSTRE_FILESYSTEM_ID=fs-XXXXXXXXXX
+export FSX_LUSTRE_DNS_NAME=fs-XXXXXXXXXX.fsx.us-west-2.amazonaws.com
+export FSX_LUSTRE_MOUNT_NAME=k7f3mp9x
+export FSX_LUSTRE_STORAGE_CAPACITY=1200Gi
+
+# StorageClasses (once per cluster)
+kubectl apply -f fsx/openzfs-sc.yaml
+kubectl apply -f fsx/lustre-sc.yaml
+
+# PV/PVC pairs (per namespace)
+envsubst < fsx/openzfs-pv.yaml | kubectl apply -f -
+envsubst < fsx/openzfs-pvc.yaml | kubectl apply -f -
+envsubst < fsx/lustre-pv.yaml | kubectl apply -f -
+envsubst < fsx/lustre-pvc.yaml | kubectl apply -f -
 ```
 
-The resulting PVC is named `fsx-claim` and is referenced by the workspace templates in their `defaultVolumes` section. The `protected-pvc` ValidatingAdmissionPolicy ensures only workspaces using approved templates can mount this PVC.
+The resulting PVCs (`fsx-openzfs-claim` and `fsx-lustre-claim`) are referenced by the workspace templates in their `defaultVolumes` section. The `protected-pvc` ValidatingAdmissionPolicy ensures only workspaces using approved templates can mount these PVCs.
 
 ---
 
@@ -412,7 +432,7 @@ This creates WorkspaceTemplates named `jl-smd-slurm-custom` and `ce-smd-slurm-cu
 - Defaults to the CPU image
 - Sets the container command to the appropriate proxy entrypoint script (`start-jupyterlab-proxy.sh` or `start-code-editor-proxy.sh`), which handles user identity setup and Slurm configuration before launching the IDE
 - Uses the `hyperpod-access-strategy` access strategy
-- Mounts the FSx PVC at `/home`
+- Mounts FSx for OpenZFS at `/home` (user home directories) and FSx for Lustre at `/fsx` (shared ML data)
 
 To verify:
 
@@ -431,13 +451,13 @@ The project includes three Kubernetes `ValidatingAdmissionPolicy` resources (req
 
 ### Protected PVC (`validating-admission-policies/protected-pvc/`)
 
-Ensures only workspaces using approved templates can mount the protected FSx PVC.
+Ensures only workspaces using approved templates can mount the protected FSx PVCs.
 
 | File | Resource | Purpose |
 |------|----------|---------|
-| `policy.yaml` | `ValidatingAdmissionPolicy` | CEL expression that checks if a workspace referencing the protected PVC has an allowed `workspace.jupyter.org/template-name` label |
+| `policy.yaml` | `ValidatingAdmissionPolicy` | CEL expression that checks if a workspace referencing any protected PVC has an allowed `workspace.jupyter.org/template-name` label |
 | `binding.yaml` | `ValidatingAdmissionPolicyBinding` | Binds the policy with `Deny` action and references the parameter ConfigMap |
-| `params.yaml` | `ConfigMap` | Configures the protected PVC name and the list of allowed template names |
+| `params.yaml` | `ConfigMap` | Configures the list of protected PVC names and the list of allowed template names |
 
 To deploy:
 
@@ -445,7 +465,7 @@ To deploy:
 kubectl apply -f validating-admission-policies/protected-pvc/
 ```
 
-To change the protected PVC name or allowed templates, edit `protected-pvc/params.yaml` and re-apply.
+To change the protected PVC names or allowed templates, edit `protected-pvc/params.yaml` and re-apply.
 
 ### Command Integrity (`validating-admission-policies/command-integrity/`)
 
@@ -503,7 +523,7 @@ User creates Workspace
         ▼
 K8s API Server
   ├─► ValidatingAdmissionPolicy — Protected PVC (CEL)
-  │     └─ If workspace uses protected FSx PVC, validates template-name label
+  │     └─ If workspace uses a protected FSx PVC, validates template-name label
   │         └─ Denies if template not in allowed list
   │
   ├─► ValidatingAdmissionPolicy — Command Integrity (CEL)
