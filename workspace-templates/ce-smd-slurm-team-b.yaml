@@ -1,0 +1,47 @@
+apiVersion: workspace.jupyter.org/v1alpha1
+kind: WorkspaceTemplate
+metadata:
+  name: ce-smd-slurm-custom
+  namespace: hyperpod-ns-team-b
+spec:
+  displayName: "Code Editor with Slurm (team-b)"
+  description: "SageMaker Distribution with Slurm client and UID/GID configuration"
+  appType: code-editor
+  baseLabels:
+  - key: kueue.x-k8s.io/queue-name
+    value: hyperpod-ns-team-b-localqueue
+  allowCustomImages: false
+  allowSecondaryStorages: true
+  defaultImage: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/smd-slurm:${SMD_SLURM_IMAGE_TAG}-cpu
+  allowedImages:
+    - ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/smd-slurm:${SMD_SLURM_IMAGE_TAG}-cpu
+    - ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/smd-slurm:${SMD_SLURM_IMAGE_TAG}-gpu
+  defaultContainerConfig:
+    command:
+      - /bin/bash
+      - "-c"
+      - exec /usr/bin/start-code-editor-proxy.sh
+  defaultResources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      cpu: "2"
+      memory: 8Gi
+  defaultPodSecurityContext:
+    fsGroup: 1000
+  defaultOwnershipType: OwnerOnly
+  defaultAccessType: OwnerOnly
+  defaultAccessStrategy:
+    name: hyperpod-access-strategy
+    namespace: jupyter-k8s-system
+  defaultVolumes:
+    - name: home-dir
+      mountPath: /home
+      persistentVolumeClaimName: fsx-claim
+  primaryStorage:
+    defaultMountPath: /mnt/ebs-volume
+    defaultSize: 5Gi
+    defaultStorageClassName: sagemaker-spaces-default-storage-class
+    maxSize: 100Gi
+    minSize: 100Mi

@@ -1,12 +1,12 @@
 apiVersion: workspace.jupyter.org/v1alpha1
 kind: WorkspaceTemplate
 metadata:
-  name: code-editor-smd-slurm-custom
+  name: jl-smd-slurm-custom
   namespace: jupyter-k8s-system
 spec:
-  displayName: "Code Editor with Slurm (Custom SMD)"
-  description: "SageMaker Distribution with Slurm client and UID/GID injection via WorkspaceAccessStrategy"
-  appType: code-editor
+  displayName: "JupyterLab with Slurm (shared)"
+  description: "SageMaker Distribution with Slurm client and UID/GID configuration"
+  appType: jupyterlab
   allowCustomImages: false
   allowSecondaryStorages: true
   defaultImage: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/smd-slurm:${SMD_SLURM_IMAGE_TAG}-cpu
@@ -17,7 +17,7 @@ spec:
     command:
       - /bin/bash
       - "-c"
-      - exec /usr/bin/start-code-editor-proxy.sh
+      - exec /usr/bin/start-jupyterlab-proxy.sh
   defaultResources:
     requests:
       cpu: "2"
@@ -32,6 +32,10 @@ spec:
   defaultAccessStrategy:
     name: hyperpod-access-strategy
     namespace: jupyter-k8s-system
+  defaultVolumes:
+    - name: home-dir
+      mountPath: /home
+      persistentVolumeClaimName: fsx-claim
   primaryStorage:
     defaultMountPath: /mnt/ebs-volume
     defaultSize: 5Gi

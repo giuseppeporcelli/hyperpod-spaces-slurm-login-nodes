@@ -6,8 +6,8 @@ metadata:
 data:
   # Newline-separated list of template names this policy applies to.
   allowedTemplates: |
-    jupyterlab-smd-slurm-custom
-    code-editor-smd-slurm-custom
+    jl-smd-slurm-custom
+    ce-smd-slurm-custom
   # Newline-separated list of environment variable names that users must not
   # set in workspace specs. These are consumed by security-sensitive runtime
   # scripts in the custom image and must not be overridden by users.

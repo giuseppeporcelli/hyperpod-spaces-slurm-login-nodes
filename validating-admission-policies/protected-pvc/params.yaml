@@ -6,5 +6,5 @@ metadata:
 data:
   pvcName: "fsx-claim"
   allowedTemplates: |
-    jupyterlab-smd-slurm-custom
-    code-editor-smd-slurm-custom
+    jl-smd-slurm-custom
+    ce-smd-slurm-custom
