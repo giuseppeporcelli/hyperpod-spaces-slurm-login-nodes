@@ -98,6 +98,96 @@ helm install hyperpod-spaces-user-webhook ./chart \
 
 ---
 
+## GPU-Aware Resource Allocation
+
+When a workspace requests GPUs, the webhook automatically sets the appropriate vCPU and memory resources based on the target instance type and the number of GPUs requested. This ensures pods are scheduled with the correct resource footprint without requiring users to manually calculate CPU/memory values for each GPU configuration.
+
+### How It Works
+
+1. The user creates a workspace with `nvidia.com/gpu` in their resource requests/limits and a `beta.kubernetes.io/instance-type` (or `node.kubernetes.io/instance-type`) node selector.
+2. The webhook extracts the GPU count and instance type from the workspace spec.
+3. It looks up the instance type in the GPU resource ConfigMap and finds the entry matching the requested GPU count.
+4. If a match is found, the webhook patches `spec.resources` with the configured CPU and memory values (both requests and limits).
+5. If no match is found (unknown instance type, or unsupported GPU count for that instance), the workspace is allowed through without resource modification.
+
+### ConfigMap Format
+
+The configuration is stored in a ConfigMap with a `config.json` key. Each instance type maps to an array of entries — one per valid GPU count — with explicit CPU and memory values:
+
+```json
+{
+  "ml.g5.12xlarge": [
+    {"gpus": 1, "cpu": "12", "memory": "48Gi"},
+    {"gpus": 2, "cpu": "24", "memory": "96Gi"},
+    {"gpus": 4, "cpu": "48", "memory": "192Gi"}
+  ],
+  "ml.p4d.24xlarge": [
+    {"gpus": 1, "cpu": "12", "memory": "144Gi"},
+    {"gpus": 2, "cpu": "24", "memory": "288Gi"},
+    {"gpus": 4, "cpu": "48", "memory": "576Gi"},
+    {"gpus": 8, "cpu": "96", "memory": "1152Gi"}
+  ]
+}
+```
+
+This gives administrators full control over resource allocation. Values don't need to follow a linear ratio — you can reserve CPU for system overhead at lower GPU counts, or allocate proportionally more memory at higher counts.
+
+An example ConfigMap is provided at [`chart/examples/gpu-instance-resources-configmap.yaml`](chart/examples/gpu-instance-resources-configmap.yaml).
+
+### Configuration via Helm
+
+The GPU resource mapping is defined in `values.yaml` under the `gpuInstanceResources` key and rendered into a ConfigMap by the Helm chart:
+
+```yaml
+gpuInstanceResources:
+  ml.g5.12xlarge:
+    - gpus: 1
+      cpu: "12"
+      memory: "48Gi"
+    - gpus: 2
+      cpu: "24"
+      memory: "96Gi"
+    - gpus: 4
+      cpu: "48"
+      memory: "192Gi"
+```
+
+The webhook watches the ConfigMap for changes and reloads the configuration automatically — no pod restart required.
+
+### Updating the Configuration
+
+To modify the GPU resource mapping after deployment:
+
+```sh
+# Option 1: Edit the ConfigMap directly
+kubectl edit configmap <release>-hyperpod-spaces-user-webhook-gpu-instance-resources -n jupyter-k8s-system
+
+# Option 2: Update values.yaml and upgrade the Helm release
+helm upgrade hyperpod-spaces-user-webhook ./chart -f custom-values.yaml
+```
+
+Changes are picked up by the webhook within seconds via the Kubernetes watch mechanism.
+
+### Helm Values
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `gpuInstanceResources` | *(see values.yaml)* | Map of instance types to GPU resource entries. Each entry specifies `gpus`, `cpu`, and `memory`. |
+
+### Behavior When No Match Is Found
+
+The webhook does not block workspace creation if the GPU configuration is missing or incomplete:
+
+- No `nvidia.com/gpu` in resources → no resource patching (CPU-only workspace)
+- No node selector for instance type → no resource patching (logged as warning)
+- Instance type not in ConfigMap → no resource patching (logged as warning)
+- GPU count not in the instance type's entries → no resource patching (logged as warning)
+- ConfigMap not available → no resource patching (webhook starts without GPU config)
+
+In all these cases, the workspace proceeds with whatever resources were specified in the original request or template defaults.
+
+---
+
 ## Custom Images (`smd-slurm-custom-image/`)
 
 ### Purpose
@@ -482,7 +572,9 @@ K8s API Server
         ▼
 hyperpod-spaces-user-webhook /mutate
   ├─ Strips any user-supplied SPACES_WEBHOOK_USERNAME from existing env vars
-  └─ Returns JSON Patch adding SPACES_WEBHOOK_USERNAME env var (raw username from AdmissionReview)
+  ├─ Returns JSON Patch adding SPACES_WEBHOOK_USERNAME env var (raw username from AdmissionReview)
+  └─ If GPU requested + instance-type node selector present:
+       looks up ConfigMap, patches CPU/memory based on instance type + GPU count
         │
         ▼
 Workspace Pod starts with custom image
