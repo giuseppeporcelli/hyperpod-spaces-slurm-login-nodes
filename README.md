@@ -13,111 +13,6 @@ The result is a workspace that behaves like an SSH session to a traditional Slur
 
 ---
 
-## Shared Filesystem Setup (`fsx/`)
-
-The workspace templates mount two shared filesystems into each pod:
-
-| Filesystem | Mount Path | Purpose |
-|-----------|------------|---------|
-| FSx for OpenZFS | `/home` | User home directories and `.hyperpod_spaces_conf` (Slurm/SSSD config) |
-| FSx for Lustre | `/fsx` | Shared high-throughput storage for ML datasets, checkpoints, and training artifacts |
-
-The `fsx/` directory contains Kubernetes manifests for static provisioning of both filesystems. See [`fsx/README.md`](fsx/README.md) for detailed instructions.
-
-Each namespace that runs workspaces needs its own PV/PVC pairs for both volumes. The PV names include the namespace to avoid conflicts. Both FSx for OpenZFS and FSx for Lustre support `ReadWriteMany` access, so all PVs can point to the same underlying filesystems.
-
-### Quick Setup
-
-```sh
-export NAMESPACE=hyperpod-ns-team-a
-
-# OpenZFS (home directories)
-export FSX_OPENZFS_VOLUME_ID=fsvol-XXXXXXXXXXXXXXXXX
-export FSX_OPENZFS_DNS_NAME=fs-XXXXXXXXXX.fsx.us-west-2.amazonaws.com
-export FSX_OPENZFS_MOUNT_NAME=/fsx/home
-export FSX_OPENZFS_STORAGE_CAPACITY=512Gi
-
-# Lustre (shared ML data)
-export FSX_LUSTRE_FILESYSTEM_ID=fs-XXXXXXXXXX
-export FSX_LUSTRE_DNS_NAME=fs-XXXXXXXXXX.fsx.us-west-2.amazonaws.com
-export FSX_LUSTRE_MOUNT_NAME=k7f3mp9x
-export FSX_LUSTRE_STORAGE_CAPACITY=1200Gi
-
-# StorageClasses (once per cluster)
-kubectl apply -f fsx/openzfs-sc.yaml
-kubectl apply -f fsx/lustre-sc.yaml
-
-# PV/PVC pairs (per namespace)
-envsubst < fsx/openzfs-pv.yaml | kubectl apply -f -
-envsubst < fsx/openzfs-pvc.yaml | kubectl apply -f -
-envsubst < fsx/lustre-pv.yaml | kubectl apply -f -
-envsubst < fsx/lustre-pvc.yaml | kubectl apply -f -
-```
-
-The resulting PVCs (`fsx-openzfs-claim` and `fsx-lustre-claim`) are referenced by the workspace templates in their `defaultVolumes` section. The `protected-pvc` ValidatingAdmissionPolicy ensures only workspaces using approved templates can mount these PVCs.
-
-### Shared Filesystem Prerequisites
-
-The runtime scripts expect the `.hyperpod_spaces_conf` directory to be present on the OpenZFS volume (mounted at `/home`) at the path defined by `SLURM_SHARED_DIR` (default: `/home/.hyperpod_spaces_conf`). The following files must be present in that directory before the container starts:
-
-| File | Required by | Description |
-|------|-------------|-------------|
-| `slurm.conf` | `configure-slurm.sh` | Main Slurm configuration file from the cluster controller |
-| `accounting.conf` | `configure-slurm.sh` | Slurm accounting configuration |
-| `gres.conf` | `configure-slurm.sh` | Slurm generic resources (GPU, etc.) configuration |
-| `munge.key` | `configure-slurm.sh` | Shared MUNGE authentication key (must match the controller's key) |
-| `ldaps.crt` | `configure-sssd.sh` | LDAPS CA certificate for the Active Directory / LDAP server |
-| `ldap_authtok` | `configure-sssd.sh` | LDAP bind password/token (only required if `SSSD_LDAP_AUTHTOK` env var is not set) |
-| `users.jsonl` | `resolve-user.sh` | JSON-Lines user database (only when `IDENTITY_PROVIDER=file`) |
-
-The filenames for the Slurm files and the LDAPS certificate path are hardcoded in `config.sh`.
-
-> When `IDENTITY_PROVIDER=sssd` (the default), the SSSD-related files (`ldaps.crt`, `ldap_authtok`) are required and `users.jsonl` is not needed. When `IDENTITY_PROVIDER=file`, only the four Slurm files and `users.jsonl` are needed — the SSSD files can be omitted.
-
-An example directory with placeholder files is provided at [`example-hyperpod-spaces-conf/`](example-hyperpod-spaces-conf/) for reference.
-
-The directory and all files within it must be owned by `root:root` with read permissions for others removed. This prevents unprivileged users from reading sensitive material such as the MUNGE key and LDAP credentials. The runtime scripts run as root (or via `sudo`) and can still access the files.
-
-```sh
-sudo chown -R root:root /home/.hyperpod_spaces_conf
-sudo chmod 700 /home/.hyperpod_spaces_conf
-sudo chmod 600 /home/.hyperpod_spaces_conf/*
-```
-
-Expected directory layout:
-
-```
-/home/.hyperpod_spaces_conf/      drwx------ root:root
-├── slurm.conf                    -rw------- root:root
-├── accounting.conf               -rw------- root:root
-├── gres.conf                     -rw------- root:root
-├── munge.key                     -rw------- root:root
-├── ldaps.crt                     -rw------- root:root   # only when IDENTITY_PROVIDER=sssd
-├── ldap_authtok                  -rw------- root:root   # only when IDENTITY_PROVIDER=sssd and SSSD_LDAP_AUTHTOK is not set
-└── users.jsonl                   -rw------- root:root   # only when IDENTITY_PROVIDER=file
-```
-
-#### `users.jsonl` Format (file-based identity provider)
-
-When `IDENTITY_PROVIDER=file`, user identity is resolved from a JSON-Lines file where each line is a self-contained JSON object describing one user:
-
-```json
-{"username":"alice","uid":10001,"gid":10001,"group":"alice","supplemental_groups":{"devs":10100,"docker":10200}}
-{"username":"bob","uid":10002,"gid":10002,"group":"bob","supplemental_groups":{"devs":10100}}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `username` | string | yes | Login name (must match the normalized `WORKSPACE_CREATOR_USERNAME`) |
-| `uid` | integer | yes | Numeric UID |
-| `gid` | integer | yes | Numeric primary GID |
-| `group` | string | no | Primary group name (defaults to `username` if omitted) |
-| `supplemental_groups` | object | no | Map of group name → GID for supplemental group memberships |
-
-The file must be owned by `root:root` with mode `0600`. `resolve-user.sh` validates ownership before reading and will refuse to proceed if the file is not root-owned.
-
----
-
 ## Username Injection via WorkspaceAccessStrategy
 
 ### How It Works
@@ -183,13 +78,13 @@ The configuration is organized into six sections:
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `USER_HOME_BASE` | `/home` | Base path for user home directories (where FSx for OpenZFS is mounted). Proxy scripts derive `HOME_DIR` as `${USER_HOME_BASE}/<username>`. |
+| `USER_HOME_BASE` | `/home` | Base path for user home directories (where FSx for OpenZFS is typically mounted on HyperPod Slurm clusters). Proxy scripts derive `HOME_DIR` as `${USER_HOME_BASE}/<username>`. |
 
 #### 2. Shared mount (hardcoded)
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `SLURM_SHARED_DIR` | `${USER_HOME_BASE}/.hyperpod_spaces_conf` | Directory where Slurm/SSSD config files are mounted into the container (see [Shared Filesystem Prerequisites](#shared-filesystem-prerequisites)) |
+| `SLURM_SHARED_DIR` | `${USER_HOME_BASE}/.hyperpod_spaces_conf` | Directory where Slurm/SSSD config files are mounted into the container |
 
 #### 3. Slurm — build-time (`install-slurm.sh`) — overridable via build args
 
@@ -269,6 +164,66 @@ The allowed commands for restricted groups are:
 
 Each restricted group gets its own drop-in file under `/etc/sudoers.d/restricted-<group>` containing a `Cmnd_Alias` and a single rule that grants `NOPASSWD` access only to those commands. Groups in `SUDOERS_GROUPS` still receive full unrestricted sudo via separate drop-in files under `/etc/sudoers.d/group-<group>`.
 
+### Shared Filesystem Prerequisites
+
+The runtime scripts expect a shared filesystem (e.g. FSx for Lustre or FSx for OpenZFS) to be mounted into the container at the path defined by `SLURM_SHARED_DIR` (default: `${USER_HOME_BASE}/.hyperpod_spaces_conf`, i.e. `/home/.hyperpod_spaces_conf`). The following files must be present in that directory before the container starts:
+
+| File | Required by | Description |
+|------|-------------|-------------|
+| `slurm.conf` | `configure-slurm.sh` | Main Slurm configuration file from the cluster controller |
+| `accounting.conf` | `configure-slurm.sh` | Slurm accounting configuration |
+| `gres.conf` | `configure-slurm.sh` | Slurm generic resources (GPU, etc.) configuration |
+| `munge.key` | `configure-slurm.sh` | Shared MUNGE authentication key (must match the controller's key) |
+| `ldaps.crt` | `configure-sssd.sh` | LDAPS CA certificate for the Active Directory / LDAP server |
+| `ldap_authtok` | `configure-sssd.sh` | LDAP bind password/token (only required if `SSSD_LDAP_AUTHTOK` env var is not set) |
+| `users.jsonl` | `resolve-user.sh` | JSON-Lines user database (only when `IDENTITY_PROVIDER=file`) |
+
+The filenames for the Slurm files and the LDAPS certificate path are hardcoded in `config.sh`.
+
+> When `IDENTITY_PROVIDER=sssd` (the default), the SSSD-related files (`ldaps.crt`, `ldap_authtok`) are required and `users.jsonl` is not needed. When `IDENTITY_PROVIDER=file`, only the four Slurm files and `users.jsonl` are needed — the SSSD files can be omitted.
+
+An example directory with placeholder files is provided at [`example-hyperpod-spaces-conf/`](example-hyperpod-spaces-conf/) for reference.
+
+The directory and all files within it must be owned by `root:root` with read permissions for others removed. This prevents unprivileged users from reading sensitive material such as the MUNGE key and LDAP credentials. The runtime scripts run as root (or via `sudo`) and can still access the files.
+
+```sh
+sudo chown -R root:root /home/.hyperpod_spaces_conf
+sudo chmod 700 /home/.hyperpod_spaces_conf
+sudo chmod 600 /home/.hyperpod_spaces_conf/*
+```
+
+Expected directory layout:
+
+```
+/home/.hyperpod_spaces_conf/      drwx------ root:root
+├── slurm.conf                    -rw------- root:root
+├── accounting.conf               -rw------- root:root
+├── gres.conf                     -rw------- root:root
+├── munge.key                     -rw------- root:root
+├── ldaps.crt                     -rw------- root:root   # only when IDENTITY_PROVIDER=sssd
+├── ldap_authtok                  -rw------- root:root   # only when IDENTITY_PROVIDER=sssd and SSSD_LDAP_AUTHTOK is not set
+└── users.jsonl                   -rw------- root:root   # only when IDENTITY_PROVIDER=file
+```
+
+#### `users.jsonl` Format (file-based identity provider)
+
+When `IDENTITY_PROVIDER=file`, user identity is resolved from a JSON-Lines file where each line is a self-contained JSON object describing one user:
+
+```json
+{"username":"alice","uid":10001,"gid":10001,"group":"alice","supplemental_groups":{"devs":10100,"docker":10200}}
+{"username":"bob","uid":10002,"gid":10002,"group":"bob","supplemental_groups":{"devs":10100}}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `username` | string | yes | Login name (must match the normalized `WORKSPACE_CREATOR_USERNAME`) |
+| `uid` | integer | yes | Numeric UID |
+| `gid` | integer | yes | Numeric primary GID |
+| `group` | string | no | Primary group name (defaults to `username` if omitted) |
+| `supplemental_groups` | object | no | Map of group name → GID for supplemental group memberships |
+
+The file must be owned by `root:root` with mode `0600`. `resolve-user.sh` validates ownership before reading and will refuse to proceed if the file is not root-owned.
+
 ### Build Process
 
 Both Dockerfiles follow the same steps:
@@ -305,6 +260,8 @@ Called at container startup (by the proxy scripts) to initialize the Slurm clien
 3. Copies them into the expected system locations (`/usr/local/etc/`, `/etc/munge/`).
 4. Starts the MUNGE daemon and waits for the socket to become available.
 5. Exports `SLURM_CONF` and `MUNGE_KEY_PATH` environment variables.
+
+This expects the Slurm controller's config files and MUNGE key to be available on a shared filesystem (e.g. FSx for Lustre/OpenZFS) mounted into the container.
 
 #### `configure-sssd.sh`
 
@@ -380,6 +337,51 @@ docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/smd-slurm:${SM
   -f smd-slurm-custom-image/Dockerfile.gpu smd-slurm-custom-image/
 docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/smd-slurm:${SMD_SLURM_IMAGE_TAG}-gpu
 ```
+
+---
+
+## Shared Filesystem Setup (`fsx/`)
+
+The workspace templates mount two shared filesystems into each pod:
+
+| Filesystem | Mount Path | Purpose |
+|-----------|------------|---------|
+| FSx for OpenZFS | `/home` | User home directories and `.hyperpod_spaces_conf` (Slurm/SSSD config) |
+| FSx for Lustre | `/fsx` | Shared high-throughput storage for ML datasets, checkpoints, and training artifacts |
+
+The `fsx/` directory contains Kubernetes manifests for static provisioning of both filesystems. See [`fsx/README.md`](fsx/README.md) for detailed instructions.
+
+Each namespace that runs workspaces needs its own PV/PVC pairs for both volumes. The PV names include the namespace to avoid conflicts. Both FSx for OpenZFS and FSx for Lustre support `ReadWriteMany` access, so all PVs can point to the same underlying filesystems.
+
+### Quick Setup
+
+```sh
+export NAMESPACE=hyperpod-ns-team-a
+
+# OpenZFS (home directories)
+export FSX_OPENZFS_VOLUME_ID=fsvol-XXXXXXXXXXXXXXXXX
+export FSX_OPENZFS_DNS_NAME=fs-XXXXXXXXXX.fsx.us-west-2.amazonaws.com
+export FSX_OPENZFS_MOUNT_NAME=/fsx/home
+export FSX_OPENZFS_STORAGE_CAPACITY=512Gi
+
+# Lustre (shared ML data)
+export FSX_LUSTRE_FILESYSTEM_ID=fs-XXXXXXXXXX
+export FSX_LUSTRE_DNS_NAME=fs-XXXXXXXXXX.fsx.us-west-2.amazonaws.com
+export FSX_LUSTRE_MOUNT_NAME=k7f3mp9x
+export FSX_LUSTRE_STORAGE_CAPACITY=1200Gi
+
+# StorageClasses (once per cluster)
+kubectl apply -f fsx/openzfs-sc.yaml
+kubectl apply -f fsx/lustre-sc.yaml
+
+# PV/PVC pairs (per namespace)
+envsubst < fsx/openzfs-pv.yaml | kubectl apply -f -
+envsubst < fsx/openzfs-pvc.yaml | kubectl apply -f -
+envsubst < fsx/lustre-pv.yaml | kubectl apply -f -
+envsubst < fsx/lustre-pvc.yaml | kubectl apply -f -
+```
+
+The resulting PVCs (`fsx-openzfs-claim` and `fsx-lustre-claim`) are referenced by the workspace templates in their `defaultVolumes` section. The `protected-pvc` ValidatingAdmissionPolicy ensures only workspaces using approved templates can mount these PVCs.
 
 ---
 
@@ -540,7 +542,6 @@ WorkspaceAccessStrategy (hyperpod-access-strategy)
         │
         ▼
 Workspace Pod starts with custom image
-  ├─ Two FSx volumes mounted: OpenZFS at /home, Lustre at /fsx
   ├─ Proxy script verifies WORKSPACE_CREATOR_USERNAME is set (refuses to start if missing)
   ├─ All scripts source /usr/bin/config.sh (hardcoded security-sensitive values)
   ├─ Proxy script normalizes WORKSPACE_CREATOR_USERNAME (strip prefix, lowercase, remove @domain)
