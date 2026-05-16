@@ -132,8 +132,6 @@ The configuration is stored in a ConfigMap with a `config.json` key. Each instan
 
 This gives administrators full control over resource allocation. Values don't need to follow a linear ratio — you can reserve CPU for system overhead at lower GPU counts, or allocate proportionally more memory at higher counts.
 
-An example ConfigMap is provided at [`chart/examples/gpu-instance-resources-configmap.yaml`](chart/examples/gpu-instance-resources-configmap.yaml).
-
 ### Configuration via Helm
 
 The GPU resource mapping is defined in `values.yaml` under the `gpuInstanceResources` key and rendered into a ConfigMap by the Helm chart:
