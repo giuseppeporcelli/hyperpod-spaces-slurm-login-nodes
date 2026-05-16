@@ -1,0 +1,57 @@
+# Example ConfigMap for GPU instance resource allocation.
+# This file shows the format expected by the webhook. Deploy it to the same
+# namespace as the webhook (default: jupyter-k8s-system).
+#
+# Each key in config.json is an EC2 instance type. The value is an array of
+# entries, one per valid GPU count, specifying the CPU and memory to allocate.
+#
+# When a workspace requests N GPUs and targets a specific instance type via
+# the beta.kubernetes.io/instance-type node selector, the webhook patches
+# the pod's CPU/memory resources to match the corresponding entry.
+#
+# To customize: add/remove instance types or GPU-count entries as needed.
+# Changes are picked up automatically by the webhook (no restart required).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-instance-resources
+  namespace: jupyter-k8s-system
+data:
+  config.json: |
+    {
+      "ml.g5.xlarge": [
+        {"gpus": 1, "cpu": "4", "memory": "16Gi"}
+      ],
+      "ml.g5.2xlarge": [
+        {"gpus": 1, "cpu": "8", "memory": "32Gi"}
+      ],
+      "ml.g5.4xlarge": [
+        {"gpus": 1, "cpu": "16", "memory": "64Gi"}
+      ],
+      "ml.g5.8xlarge": [
+        {"gpus": 1, "cpu": "32", "memory": "128Gi"}
+      ],
+      "ml.g5.12xlarge": [
+        {"gpus": 1, "cpu": "12", "memory": "48Gi"},
+        {"gpus": 2, "cpu": "24", "memory": "96Gi"},
+        {"gpus": 4, "cpu": "48", "memory": "192Gi"}
+      ],
+      "ml.g5.48xlarge": [
+        {"gpus": 1, "cpu": "12", "memory": "48Gi"},
+        {"gpus": 2, "cpu": "24", "memory": "96Gi"},
+        {"gpus": 4, "cpu": "48", "memory": "192Gi"},
+        {"gpus": 8, "cpu": "96", "memory": "384Gi"}
+      ],
+      "ml.p4d.24xlarge": [
+        {"gpus": 1, "cpu": "12", "memory": "144Gi"},
+        {"gpus": 2, "cpu": "24", "memory": "288Gi"},
+        {"gpus": 4, "cpu": "48", "memory": "576Gi"},
+        {"gpus": 8, "cpu": "96", "memory": "1152Gi"}
+      ],
+      "ml.p5.48xlarge": [
+        {"gpus": 1, "cpu": "12", "memory": "256Gi"},
+        {"gpus": 2, "cpu": "24", "memory": "512Gi"},
+        {"gpus": 4, "cpu": "48", "memory": "1024Gi"},
+        {"gpus": 8, "cpu": "96", "memory": "2048Gi"}
+      ]
+    }
