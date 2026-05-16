@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# slurm_client_entrypoint.sh
+# configure-slurm.sh
 # Runtime script: copies slurm.conf and munge.key from a shared mount,
 # recreates tmpfs-backed directories, starts MUNGE, and exports environment
-# variables.  Use as ENTRYPOINT to wrap your CMD.
+# variables.
 #
-# Pair with: slurm_client_setup.sh (build-time)
+# Pair with: install-slurm.sh (build-time)
 #
 
 set -euo pipefail

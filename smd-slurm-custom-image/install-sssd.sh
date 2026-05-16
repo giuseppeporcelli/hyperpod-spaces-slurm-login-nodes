@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# sssd_install.sh
+# install-sssd.sh
 # Build-time script: installs SSSD and LDAP client packages, removes
 # ec2-instance-connect, and creates required directories.
 # Run this in a Dockerfile RUN layer.
 #
-# Runtime counterpart: sssd_configure.sh
+# Runtime counterpart: configure-sssd.sh
 #
 # Reference: https://github.com/awslabs/awsome-distributed-training
 #            setup_sssd.py (base-config)

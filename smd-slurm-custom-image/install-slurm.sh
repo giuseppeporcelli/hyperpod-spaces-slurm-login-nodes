@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# slurm_client_setup.sh
+# install-slurm.sh
 # Build-time script: installs Slurm client binaries, creates users, lays out
 # config files and directory structure.  Run this in a Dockerfile RUN layer.
 #
-# Runtime counterpart: slurm_client_entrypoint.sh
+# Runtime counterpart: configure-slurm.sh
 #
 
 set -euo pipefail

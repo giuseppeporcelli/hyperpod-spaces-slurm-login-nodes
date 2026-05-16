@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 #
-# sssd_configure.sh
+# configure-sssd.sh
 # Runtime script: configures SSSD for Active Directory / LDAP authentication.
-# Reads configuration from environment variables and shared mount, writes
-# sssd.conf, installs the LDAPS certificate, configures SSH and sudoers,
-# enables automatic home directory creation, and starts SSSD.
+# Reads configuration from the shared mount, writes sssd.conf, installs the
+# LDAPS certificate, configures SSH, enables automatic home directory creation,
+# and starts SSSD.
 #
-# Pair with: sssd_install.sh (build-time)
+# Pair with: install-sssd.sh (build-time)
 #
-# All configurable variables are defined in config.sh.
-# Override any value via environment variables (e.g. docker run -e).
-# See config.sh for the full list and defaults.
+# All configurable variables are defined in config.sh (hardcoded, not
+# overridable via environment variables — see config.sh security note).
 
 set -euo pipefail
 

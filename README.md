@@ -134,18 +134,25 @@ These variables are only relevant when `IDENTITY_PROVIDER` is set to `sssd`.
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `SUDOERS_GROUPS` | `ClusterAdmin,Domain Admins` | Comma-separated list of groups to grant full (unrestricted) passwordless sudo |
-| `SUDOERS_RESTRICTED_GROUPS` | `language,evaluation,multimodal` | Comma-separated list of groups to grant command-limited passwordless sudo |
+| `SUDOERS_GROUPS` | `ClusterAdmin` | Comma-separated list of groups to grant full (unrestricted) passwordless sudo |
+| `SUDOERS_RESTRICTED_GROUPS` | `ClusterDev` | Comma-separated list of groups to grant command-limited passwordless sudo |
 | `SUDOERS_ALLOWED_COMMANDS` | *(see below)* | Newline-separated list of commands that restricted groups may run via sudo (standard sudoers `Cmnd` syntax, wildcards allowed) |
 
 The allowed commands for restricted groups are:
 
 ```
-/bin/systemctl restart|start|stop|status|reload *
+/bin/systemctl restart *
+/bin/systemctl start *
+/bin/systemctl stop *
+/bin/systemctl status *
+/bin/systemctl reload *
 /usr/bin/docker *
 /usr/local/bin/docker-compose *
 /sbin/fsck *
-/usr/bin/tail|less|cat|head /var/log/*
+/usr/bin/tail /var/log/*
+/usr/bin/less /var/log/*
+/usr/bin/cat /var/log/*
+/usr/bin/head /var/log/*
 /usr/bin/grep * /var/log/*
 /usr/bin/nvidia-smi
 /usr/bin/htop
@@ -333,11 +340,49 @@ docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/smd-slurm:${SMD_SL
 
 ---
 
-## Creating the WorkspaceTemplate
+## Shared Filesystem Setup (`fsx/`)
 
-After building and pushing the custom images, create the `WorkspaceTemplate` so users can launch workspaces with the Slurm-enabled image.
+The workspace templates mount a shared filesystem (FSx for Lustre) into each pod at `/home`. This provides persistent user home directories and the `.hyperpod_spaces_conf` directory containing Slurm/SSSD configuration files.
 
-The template file at `workspace-templates/jupyterlab-smd-slurm-custom.yaml` uses three variables that need to be substituted before applying:
+The `fsx/` directory contains Kubernetes manifests for static provisioning of an existing FSx for Lustre filesystem as a PersistentVolumeClaim. See [`fsx/README.md`](fsx/README.md) for detailed instructions.
+
+Each namespace that runs workspaces needs its own PV/PVC pair. The PV name includes the namespace (`fsx-pv-$NAMESPACE`) to avoid conflicts. All PVs can point to the same underlying FSx filesystem since FSx for Lustre supports `ReadWriteMany` access.
+
+### Quick Setup
+
+```sh
+export NAMESPACE=hyperpod-ns-team-a
+export FSX_FILESYSTEM_ID=fs-XXXXXXXXXX
+export FSX_DNS_NAME=fs-XXXXXXXXXX.fsx.us-west-2.amazonaws.com
+export FSX_MOUNT_NAME=k7f3mp9x
+
+kubectl apply -f fsx/fsx-sc.yaml
+envsubst < fsx/fsx-pv.yaml | kubectl apply -f -
+envsubst < fsx/fsx-pvc.yaml | kubectl apply -f -
+```
+
+The resulting PVC is named `fsx-claim` and is referenced by the workspace templates in their `defaultVolumes` section. The `protected-pvc` ValidatingAdmissionPolicy ensures only workspaces using approved templates can mount this PVC.
+
+---
+
+## Creating the WorkspaceTemplates (`workspace-templates/`)
+
+After building and pushing the custom images, create the `WorkspaceTemplate` resources so users can launch workspaces with the Slurm-enabled image.
+
+The `workspace-templates/` directory contains six template files that simulate a multi-team scenario where two separate teams operate in different namespaces, plus a shared system-level template:
+
+| File | Namespace | App Type | Description |
+|------|-----------|----------|-------------|
+| `jl-smd-slurm-k8s-system.yaml` | `jupyter-k8s-system` | JupyterLab | Shared system-level template |
+| `ce-smd-slurm-k8s-system.yaml` | `jupyter-k8s-system` | Code Editor | Shared system-level template |
+| `jl-smd-slurm-team-a.yaml` | `hyperpod-ns-team-a` | JupyterLab | Team A template (with Kueue local queue) |
+| `ce-smd-slurm-team-a.yaml` | `hyperpod-ns-team-a` | Code Editor | Team A template (with Kueue local queue) |
+| `jl-smd-slurm-team-b.yaml` | `hyperpod-ns-team-b` | JupyterLab | Team B template (with Kueue local queue) |
+| `ce-smd-slurm-team-b.yaml` | `hyperpod-ns-team-b` | Code Editor | Team B template (with Kueue local queue) |
+
+The team-specific templates include a `baseLabels` field that assigns workspaces to the team's Kueue local queue for resource quota management. All templates share the same image and entrypoint configuration.
+
+All template files use three variables that need to be substituted before applying:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
@@ -345,35 +390,37 @@ The template file at `workspace-templates/jupyterlab-smd-slurm-custom.yaml` uses
 | `${AWS_REGION}` | ECR region | `us-west-2` |
 | `${SMD_SLURM_IMAGE_TAG}` | Custom Slurm image version tag | `0.1.0` |
 
-Apply the template with `envsubst` (using the same `AWS_ACCOUNT_ID`, `AWS_REGION`, and `SMD_SLURM_IMAGE_TAG` variables from the image build step):
+Apply the templates with `envsubst` (using the same `AWS_ACCOUNT_ID`, `AWS_REGION`, and `SMD_SLURM_IMAGE_TAG` variables from the image build step):
 
 ```sh
-envsubst < workspace-templates/jupyterlab-smd-slurm-custom.yaml | kubectl apply -f -
+# System-level templates
+envsubst < workspace-templates/jl-smd-slurm-k8s-system.yaml | kubectl apply -f -
+envsubst < workspace-templates/ce-smd-slurm-k8s-system.yaml | kubectl apply -f -
+
+# Team A templates
+envsubst < workspace-templates/jl-smd-slurm-team-a.yaml | kubectl apply -f -
+envsubst < workspace-templates/ce-smd-slurm-team-a.yaml | kubectl apply -f -
+
+# Team B templates
+envsubst < workspace-templates/jl-smd-slurm-team-b.yaml | kubectl apply -f -
+envsubst < workspace-templates/ce-smd-slurm-team-b.yaml | kubectl apply -f -
 ```
 
-This creates a WorkspaceTemplate named `jupyterlab-smd-slurm-custom` in the `jupyter-k8s-system` namespace. It:
+This creates WorkspaceTemplates named `jl-smd-slurm-custom` and `ce-smd-slurm-custom` in each namespace. Each template:
 
 - Allows both CPU (`smd-slurm:<tag>-cpu`) and GPU (`smd-slurm:<tag>-gpu`) image variants
 - Defaults to the CPU image
-- Sets the container command to `/usr/bin/start-jupyterlab-proxy.sh`, which handles user identity setup and Slurm configuration before launching JupyterLab
+- Sets the container command to the appropriate proxy entrypoint script (`start-jupyterlab-proxy.sh` or `start-code-editor-proxy.sh`), which handles user identity setup and Slurm configuration before launching the IDE
 - Uses the `hyperpod-access-strategy` access strategy
+- Mounts the FSx PVC at `/home`
 
 To verify:
 
 ```sh
-kubectl get workspacetemplate jupyterlab-smd-slurm-custom -n jupyter-k8s-system
-```
-
-For the Code Editor variant, apply the second template using the same variables:
-
-```sh
-envsubst < workspace-templates/code-editor-smd-slurm-custom.yaml | kubectl apply -f -
-```
-
-To verify:
-
-```sh
-kubectl get workspacetemplate code-editor-smd-slurm-custom -n jupyter-k8s-system
+kubectl get workspacetemplate jl-smd-slurm-custom -n jupyter-k8s-system
+kubectl get workspacetemplate ce-smd-slurm-custom -n jupyter-k8s-system
+kubectl get workspacetemplate jl-smd-slurm-custom -n hyperpod-ns-team-a
+kubectl get workspacetemplate ce-smd-slurm-custom -n hyperpod-ns-team-a
 ```
 
 ---
