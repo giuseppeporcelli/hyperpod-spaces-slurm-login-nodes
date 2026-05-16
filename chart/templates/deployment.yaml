@@ -22,6 +22,11 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8443
+          env:
+            - name: GPU_CONFIGMAP_NAME
+              value: {{ include "hyperpod-spaces-user-webhook.fullname" . }}-gpu-instance-resources
+            - name: GPU_CONFIGMAP_NAMESPACE
+              value: {{ .Values.namespace }}
           volumeMounts:
             - name: certs
               mountPath: /certs

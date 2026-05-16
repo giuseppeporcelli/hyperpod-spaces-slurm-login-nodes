@@ -13,3 +13,74 @@ certManager:
 
 serviceAccount:
   annotations: {}
+
+# GPU instance resource allocation configuration.
+# Maps instance types to discrete GPU-count entries. When a workspace requests
+# GPUs and has a beta.kubernetes.io/instance-type node selector, the webhook
+# patches CPU/memory resources based on this mapping.
+gpuInstanceResources:
+  ml.g5.xlarge:
+    - gpus: 1
+      cpu: "4"
+      memory: "16Gi"
+  ml.g5.2xlarge:
+    - gpus: 1
+      cpu: "8"
+      memory: "32Gi"
+  ml.g5.4xlarge:
+    - gpus: 1
+      cpu: "16"
+      memory: "64Gi"
+  ml.g5.8xlarge:
+    - gpus: 1
+      cpu: "32"
+      memory: "128Gi"
+  ml.g5.12xlarge:
+    - gpus: 1
+      cpu: "12"
+      memory: "48Gi"
+    - gpus: 2
+      cpu: "24"
+      memory: "96Gi"
+    - gpus: 4
+      cpu: "48"
+      memory: "192Gi"
+  ml.g5.48xlarge:
+    - gpus: 1
+      cpu: "12"
+      memory: "48Gi"
+    - gpus: 2
+      cpu: "24"
+      memory: "96Gi"
+    - gpus: 4
+      cpu: "48"
+      memory: "192Gi"
+    - gpus: 8
+      cpu: "96"
+      memory: "384Gi"
+  ml.p4d.24xlarge:
+    - gpus: 1
+      cpu: "12"
+      memory: "144Gi"
+    - gpus: 2
+      cpu: "24"
+      memory: "288Gi"
+    - gpus: 4
+      cpu: "48"
+      memory: "576Gi"
+    - gpus: 8
+      cpu: "96"
+      memory: "1152Gi"
+  ml.p5.48xlarge:
+    - gpus: 1
+      cpu: "12"
+      memory: "256Gi"
+    - gpus: 2
+      cpu: "24"
+      memory: "512Gi"
+    - gpus: 4
+      cpu: "48"
+      memory: "1024Gi"
+    - gpus: 8
+      cpu: "96"
+      memory: "2048Gi"

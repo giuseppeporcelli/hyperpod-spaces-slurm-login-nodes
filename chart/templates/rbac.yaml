@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "hyperpod-spaces-user-webhook.fullname" . }}-configmap-reader
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hyperpod-spaces-user-webhook.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+      - {{ include "hyperpod-spaces-user-webhook.fullname" . }}-gpu-instance-resources
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "hyperpod-spaces-user-webhook.fullname" . }}-configmap-reader
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hyperpod-spaces-user-webhook.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hyperpod-spaces-user-webhook.fullname" . }}
+    namespace: {{ .Values.namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "hyperpod-spaces-user-webhook.fullname" . }}-configmap-reader
+  apiGroup: rbac.authorization.k8s.io
