@@ -34,7 +34,8 @@ type gpuResourceConfig map[string][]GPUResourceEntry
 var (
 	gpuConfig        gpuResourceConfig
 	gpuConfigMu      sync.RWMutex
-	gpuInstanceTypes []string // instance types that should be avoided by non-GPU workloads
+	gpuInstanceTypes   []string // instance types that should be avoided by non-GPU workloads
+	gpuInstanceTypesMu sync.RWMutex
 )
 
 func getGPUConfig() gpuResourceConfig {
@@ -47,6 +48,84 @@ func setGPUConfig(cfg gpuResourceConfig) {
 	gpuConfigMu.Lock()
 	defer gpuConfigMu.Unlock()
 	gpuConfig = cfg
+}
+
+func getGPUInstanceTypes() []string {
+	gpuInstanceTypesMu.RLock()
+	defer gpuInstanceTypesMu.RUnlock()
+	return gpuInstanceTypes
+}
+
+func setGPUInstanceTypes(types []string) {
+	gpuInstanceTypesMu.Lock()
+	defer gpuInstanceTypesMu.Unlock()
+	gpuInstanceTypes = types
+}
+
+// parseGPUInstanceTypesFromConfigMap extracts the list of GPU instance types
+// from a ConfigMap's "instance-types.json" data key.
+func parseGPUInstanceTypesFromConfigMap(cm *corev1.ConfigMap) ([]string, error) {
+	data, ok := cm.Data["instance-types.json"]
+	if !ok {
+		return nil, fmt.Errorf("ConfigMap %s/%s missing 'instance-types.json' key", cm.Namespace, cm.Name)
+	}
+	var types []string
+	if err := json.Unmarshal([]byte(data), &types); err != nil {
+		return nil, fmt.Errorf("failed to parse instance-types.json: %w", err)
+	}
+	return types, nil
+}
+
+// watchGPUInstanceTypesConfigMap watches the GPU instance types ConfigMap and
+// updates the in-memory list on changes. Blocks until ctx is cancelled.
+func watchGPUInstanceTypesConfigMap(ctx context.Context, clientset kubernetes.Interface, namespace, name string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Initial load
+		cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			log.Printf("[anti-affinity] WARNING: cannot read ConfigMap %s/%s: %v", namespace, name, err)
+		} else {
+			if types, err := parseGPUInstanceTypesFromConfigMap(cm); err != nil {
+				log.Printf("[anti-affinity] WARNING: %v", err)
+			} else {
+				setGPUInstanceTypes(types)
+				log.Printf("[anti-affinity] Loaded %d GPU instance types from ConfigMap", len(types))
+			}
+		}
+
+		// Watch for changes
+		watcher, err := clientset.CoreV1().ConfigMaps(namespace).Watch(ctx, metav1.ListOptions{
+			FieldSelector: "metadata.name=" + name,
+		})
+		if err != nil {
+			log.Printf("[anti-affinity] WARNING: cannot watch ConfigMap: %v (will retry)", err)
+			continue
+		}
+
+		for event := range watcher.ResultChan() {
+			if event.Type == watch.Modified || event.Type == watch.Added {
+				if cm, ok := event.Object.(*corev1.ConfigMap); ok {
+					if types, err := parseGPUInstanceTypesFromConfigMap(cm); err != nil {
+						log.Printf("[anti-affinity] WARNING: %v", err)
+					} else {
+						setGPUInstanceTypes(types)
+						log.Printf("[anti-affinity] Reloaded %d GPU instance types from ConfigMap", len(types))
+					}
+				}
+			}
+			if event.Type == watch.Deleted {
+				log.Printf("[anti-affinity] WARNING: ConfigMap deleted, clearing GPU instance types")
+				setGPUInstanceTypes(nil)
+			}
+		}
+		log.Printf("[anti-affinity] Watch ended, restarting...")
+	}
 }
 
 // parseGPUConfigFromConfigMap extracts the gpu resource config from a ConfigMap's
@@ -125,15 +204,10 @@ func main() {
 		configMapNamespace = "jupyter-k8s-system"
 	}
 
-	// Load the list of GPU instance types for anti-affinity rules
-	if types := os.Getenv("GPU_INSTANCE_TYPES"); types != "" {
-		for _, t := range strings.Split(types, ",") {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				gpuInstanceTypes = append(gpuInstanceTypes, t)
-			}
-		}
-		log.Printf("[anti-affinity] Loaded %d GPU instance types to avoid for non-GPU workloads", len(gpuInstanceTypes))
+	// Load the name of the GPU instance types ConfigMap for anti-affinity rules
+	gpuInstanceTypesConfigMap := os.Getenv("GPU_INSTANCE_TYPES_CONFIGMAP")
+	if gpuInstanceTypesConfigMap == "" {
+		gpuInstanceTypesConfigMap = "gpu-instance-types"
 	}
 
 	// Set up in-cluster Kubernetes client for ConfigMap watching
@@ -147,6 +221,7 @@ func main() {
 		} else {
 			ctx := context.Background()
 			go watchConfigMap(ctx, clientset, configMapNamespace, configMapName)
+			go watchGPUInstanceTypesConfigMap(ctx, clientset, configMapNamespace, gpuInstanceTypesConfigMap)
 		}
 	}
 
@@ -385,7 +460,8 @@ func extractInstanceType(spec map[string]interface{}) string {
 // to prevent non-GPU workloads from being scheduled on GPU instance types.
 // Returns nil if the workload requests GPUs or if no GPU instance types are configured.
 func buildAntiAffinityPatch(spec map[string]interface{}) map[string]interface{} {
-	if len(gpuInstanceTypes) == 0 {
+	instanceTypes := getGPUInstanceTypes()
+	if len(instanceTypes) == 0 {
 		return nil
 	}
 
@@ -394,7 +470,7 @@ func buildAntiAffinityPatch(spec map[string]interface{}) map[string]interface{} 
 		return nil
 	}
 
-	log.Printf("[anti-affinity] Non-GPU workload detected, adding node affinity to avoid GPU instance types: %v", gpuInstanceTypes)
+	log.Printf("[anti-affinity] Non-GPU workload detected, adding node affinity to avoid GPU instance types: %v", instanceTypes)
 
 	// Build a node affinity with requiredDuringSchedulingIgnoredDuringExecution
 	// that excludes GPU instance types using NotIn operator.
@@ -407,7 +483,7 @@ func buildAntiAffinityPatch(spec map[string]interface{}) map[string]interface{} 
 							map[string]interface{}{
 								"key":      "beta.kubernetes.io/instance-type",
 								"operator": "NotIn",
-								"values":   gpuInstanceTypes,
+								"values":   instanceTypes,
 							},
 						},
 					},

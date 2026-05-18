@@ -17,6 +17,8 @@ serviceAccount:
 # List of GPU instance types used to build anti-affinity rules for non-GPU
 # workloads. When a workspace does NOT request GPUs, the webhook injects a
 # node affinity rule to avoid scheduling on these instance types.
+# This list is stored in a ConfigMap and watched for live updates — no
+# redeployment needed when editing.
 gpuInstanceTypes:
   - ml.g5.24xlarge
   - ml.p5.48xlarge
