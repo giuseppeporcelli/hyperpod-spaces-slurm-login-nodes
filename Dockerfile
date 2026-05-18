@@ -3,6 +3,7 @@ WORKDIR /app
 ENV GOPROXY=direct
 COPY go.mod go.sum ./
 RUN go mod download
+RUN go mod tidy
 COPY main.go .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o hyperpod-spaces-user-webhook .
 
