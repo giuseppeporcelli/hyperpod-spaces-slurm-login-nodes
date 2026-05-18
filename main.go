@@ -32,8 +32,9 @@ type GPUResourceEntry struct {
 type gpuResourceConfig map[string][]GPUResourceEntry
 
 var (
-	gpuConfig   gpuResourceConfig
-	gpuConfigMu sync.RWMutex
+	gpuConfig        gpuResourceConfig
+	gpuConfigMu      sync.RWMutex
+	gpuInstanceTypes []string // instance types that should be avoided by non-GPU workloads
 )
 
 func getGPUConfig() gpuResourceConfig {
@@ -122,6 +123,17 @@ func main() {
 	configMapNamespace := os.Getenv("GPU_CONFIGMAP_NAMESPACE")
 	if configMapNamespace == "" {
 		configMapNamespace = "jupyter-k8s-system"
+	}
+
+	// Load the list of GPU instance types for anti-affinity rules
+	if types := os.Getenv("GPU_INSTANCE_TYPES"); types != "" {
+		for _, t := range strings.Split(types, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				gpuInstanceTypes = append(gpuInstanceTypes, t)
+			}
+		}
+		log.Printf("[anti-affinity] Loaded %d GPU instance types to avoid for non-GPU workloads", len(gpuInstanceTypes))
 	}
 
 	// Set up in-cluster Kubernetes client for ConfigMap watching
@@ -262,6 +274,11 @@ func buildPatches(usernameWithoutDomain string, rawObject []byte) []map[string]i
 	// --- GPU resource patch: set CPU/memory based on instance type + GPU count ---
 	patches = append(patches, buildGPUResourcePatches(spec)...)
 
+	// --- Anti-affinity patch: prevent non-GPU workloads from landing on GPU nodes ---
+	if p := buildAntiAffinityPatch(spec); p != nil {
+		patches = append(patches, p)
+	}
+
 	return patches
 }
 
@@ -362,4 +379,46 @@ func extractInstanceType(spec map[string]interface{}) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return ""
+}
+
+// buildAntiAffinityPatch returns a JSON patch that adds a node affinity rule
+// to prevent non-GPU workloads from being scheduled on GPU instance types.
+// Returns nil if the workload requests GPUs or if no GPU instance types are configured.
+func buildAntiAffinityPatch(spec map[string]interface{}) map[string]interface{} {
+	if len(gpuInstanceTypes) == 0 {
+		return nil
+	}
+
+	// If the workload requests GPUs, don't add anti-affinity
+	if extractGPUCount(spec) > 0 {
+		return nil
+	}
+
+	log.Printf("[anti-affinity] Non-GPU workload detected, adding node affinity to avoid GPU instance types: %v", gpuInstanceTypes)
+
+	// Build a node affinity with requiredDuringSchedulingIgnoredDuringExecution
+	// that excludes GPU instance types using NotIn operator.
+	affinity := map[string]interface{}{
+		"nodeAffinity": map[string]interface{}{
+			"requiredDuringSchedulingIgnoredDuringExecution": map[string]interface{}{
+				"nodeSelectorTerms": []interface{}{
+					map[string]interface{}{
+						"matchExpressions": []interface{}{
+							map[string]interface{}{
+								"key":      "beta.kubernetes.io/instance-type",
+								"operator": "NotIn",
+								"values":   gpuInstanceTypes,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return map[string]interface{}{
+		"op":    "add",
+		"path":  "/spec/affinity",
+		"value": affinity,
+	}
 }

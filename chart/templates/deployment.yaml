@@ -27,6 +27,8 @@ spec:
               value: {{ include "hyperpod-spaces-user-webhook.fullname" . }}-gpu-instance-resources
             - name: GPU_CONFIGMAP_NAMESPACE
               value: {{ .Values.namespace }}
+            - name: GPU_INSTANCE_TYPES
+              value: {{ .Values.gpuInstanceTypes | join "," | quote }}
           volumeMounts:
             - name: certs
               mountPath: /certs

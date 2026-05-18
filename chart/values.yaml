@@ -14,6 +14,13 @@ certManager:
 serviceAccount:
   annotations: {}
 
+# List of GPU instance types used to build anti-affinity rules for non-GPU
+# workloads. When a workspace does NOT request GPUs, the webhook injects a
+# node affinity rule to avoid scheduling on these instance types.
+gpuInstanceTypes:
+  - ml.g5.24xlarge
+  - ml.p5.48xlarge
+
 # GPU instance resource allocation configuration.
 # Maps instance types to discrete GPU-count entries. When a workspace requests
 # GPUs and has a beta.kubernetes.io/instance-type node selector, the webhook
