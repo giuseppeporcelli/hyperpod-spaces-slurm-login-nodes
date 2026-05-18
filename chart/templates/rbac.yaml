@@ -10,6 +10,7 @@ rules:
     resources: ["configmaps"]
     resourceNames:
       - {{ include "hyperpod-spaces-user-webhook.fullname" . }}-gpu-instance-resources
+      - {{ include "hyperpod-spaces-user-webhook.fullname" . }}-gpu-instance-types
     verbs: ["get", "watch", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
