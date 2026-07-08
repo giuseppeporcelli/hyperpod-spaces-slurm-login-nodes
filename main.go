@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,11 +32,22 @@ type GPUResourceEntry struct {
 // gpuResourceConfig maps instance-type → list of GPU resource entries.
 type gpuResourceConfig map[string][]GPUResourceEntry
 
+// CPUInstanceEntry defines a CPU instance type with its resource capacity.
+// The webhook selects the smallest instance type whose vCPUs and memory are
+// >= the workspace's requested resources.
+type CPUInstanceEntry struct {
+	InstanceType string `json:"instanceType"`
+	VCPUs        int    `json:"vcpus"`
+	MemoryGiB    int    `json:"memoryGiB"`
+}
+
 var (
 	gpuConfig        gpuResourceConfig
 	gpuConfigMu      sync.RWMutex
 	gpuInstanceTypes   []string // instance types that should be avoided by non-GPU workloads
 	gpuInstanceTypesMu sync.RWMutex
+	cpuInstanceTypes   []CPUInstanceEntry // sorted by vcpus then memory
+	cpuInstanceTypesMu sync.RWMutex
 )
 
 func getGPUConfig() gpuResourceConfig {
@@ -60,6 +72,25 @@ func setGPUInstanceTypes(types []string) {
 	gpuInstanceTypesMu.Lock()
 	defer gpuInstanceTypesMu.Unlock()
 	gpuInstanceTypes = types
+}
+
+func getCPUInstanceTypes() []CPUInstanceEntry {
+	cpuInstanceTypesMu.RLock()
+	defer cpuInstanceTypesMu.RUnlock()
+	return cpuInstanceTypes
+}
+
+func setCPUInstanceTypes(entries []CPUInstanceEntry) {
+	cpuInstanceTypesMu.Lock()
+	defer cpuInstanceTypesMu.Unlock()
+	// Sort by vcpus first, then memory, so lookup can find smallest fit
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].VCPUs != entries[j].VCPUs {
+			return entries[i].VCPUs < entries[j].VCPUs
+		}
+		return entries[i].MemoryGiB < entries[j].MemoryGiB
+	})
+	cpuInstanceTypes = entries
 }
 
 // parseGPUInstanceTypesFromConfigMap extracts the list of GPU instance types
@@ -142,6 +173,72 @@ func parseGPUConfigFromConfigMap(cm *corev1.ConfigMap) (gpuResourceConfig, error
 	return cfg, nil
 }
 
+// parseCPUInstanceTypesFromConfigMap extracts the CPU instance types config from
+// a ConfigMap's "config.json" data key.
+func parseCPUInstanceTypesFromConfigMap(cm *corev1.ConfigMap) ([]CPUInstanceEntry, error) {
+	data, ok := cm.Data["config.json"]
+	if !ok {
+		return nil, fmt.Errorf("ConfigMap %s/%s missing 'config.json' key", cm.Namespace, cm.Name)
+	}
+	var entries []CPUInstanceEntry
+	if err := json.Unmarshal([]byte(data), &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse config.json: %w", err)
+	}
+	return entries, nil
+}
+
+// watchCPUInstanceTypesConfigMap watches the CPU instance types ConfigMap and
+// updates the in-memory list on changes. Blocks until ctx is cancelled.
+func watchCPUInstanceTypesConfigMap(ctx context.Context, clientset kubernetes.Interface, namespace, name string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Initial load
+		cm, err := clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			log.Printf("[cpu-instance-types] WARNING: cannot read ConfigMap %s/%s: %v", namespace, name, err)
+		} else {
+			if entries, err := parseCPUInstanceTypesFromConfigMap(cm); err != nil {
+				log.Printf("[cpu-instance-types] WARNING: %v", err)
+			} else {
+				setCPUInstanceTypes(entries)
+				log.Printf("[cpu-instance-types] Loaded %d CPU instance types from ConfigMap", len(entries))
+			}
+		}
+
+		// Watch for changes
+		watcher, err := clientset.CoreV1().ConfigMaps(namespace).Watch(ctx, metav1.ListOptions{
+			FieldSelector: "metadata.name=" + name,
+		})
+		if err != nil {
+			log.Printf("[cpu-instance-types] WARNING: cannot watch ConfigMap: %v (will retry)", err)
+			continue
+		}
+
+		for event := range watcher.ResultChan() {
+			if event.Type == watch.Modified || event.Type == watch.Added {
+				if cm, ok := event.Object.(*corev1.ConfigMap); ok {
+					if entries, err := parseCPUInstanceTypesFromConfigMap(cm); err != nil {
+						log.Printf("[cpu-instance-types] WARNING: %v", err)
+					} else {
+						setCPUInstanceTypes(entries)
+						log.Printf("[cpu-instance-types] Reloaded %d CPU instance types from ConfigMap", len(entries))
+					}
+				}
+			}
+			if event.Type == watch.Deleted {
+				log.Printf("[cpu-instance-types] WARNING: ConfigMap deleted, clearing CPU instance types")
+				setCPUInstanceTypes(nil)
+			}
+		}
+		log.Printf("[cpu-instance-types] Watch ended, restarting...")
+	}
+}
+
 // watchConfigMap starts a watch on the GPU resource ConfigMap and updates the
 // in-memory config on changes. Blocks until ctx is cancelled.
 func watchConfigMap(ctx context.Context, clientset kubernetes.Interface, namespace, name string) {
@@ -210,6 +307,12 @@ func main() {
 		gpuInstanceTypesConfigMap = "gpu-instance-types"
 	}
 
+	// Load the name of the CPU instance types ConfigMap for node selector injection
+	cpuInstanceTypesConfigMap := os.Getenv("CPU_INSTANCE_TYPES_CONFIGMAP")
+	if cpuInstanceTypesConfigMap == "" {
+		cpuInstanceTypesConfigMap = "cpu-instance-types"
+	}
+
 	// Set up in-cluster Kubernetes client for ConfigMap watching
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -222,6 +325,7 @@ func main() {
 			ctx := context.Background()
 			go watchConfigMap(ctx, clientset, configMapNamespace, configMapName)
 			go watchGPUInstanceTypesConfigMap(ctx, clientset, configMapNamespace, gpuInstanceTypesConfigMap)
+			go watchCPUInstanceTypesConfigMap(ctx, clientset, configMapNamespace, cpuInstanceTypesConfigMap)
 		}
 	}
 
@@ -349,6 +453,11 @@ func buildPatches(usernameWithoutDomain string, rawObject []byte) []map[string]i
 	// --- GPU resource patch: set CPU/memory based on instance type + GPU count ---
 	patches = append(patches, buildGPUResourcePatches(spec)...)
 
+	// --- CPU instance type patch: inject node selector based on requested vCPUs/memory ---
+	if p := buildCPUNodeSelectorPatch(spec); p != nil {
+		patches = append(patches, p)
+	}
+
 	// --- Anti-affinity patch: prevent non-GPU workloads from landing on GPU nodes ---
 	if p := buildAntiAffinityPatch(spec); p != nil {
 		patches = append(patches, p)
@@ -454,6 +563,141 @@ func extractInstanceType(spec map[string]interface{}) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return ""
+}
+
+// buildCPUNodeSelectorPatch selects the appropriate CPU instance type based on
+// the workspace's requested vCPUs and memory (when no GPUs are requested).
+// It finds the smallest configured instance type that satisfies both the vCPU
+// and memory requirements, and injects a node.kubernetes.io/instance-type node
+// selector. Returns nil if GPUs are requested, no resources are specified, or
+// no matching instance type is found.
+func buildCPUNodeSelectorPatch(spec map[string]interface{}) map[string]interface{} {
+	// Only applies to non-GPU workloads
+	if extractGPUCount(spec) > 0 {
+		return nil
+	}
+
+	// If a node selector for instance type is already set, don't override it
+	if extractInstanceType(spec) != "" {
+		return nil
+	}
+
+	entries := getCPUInstanceTypes()
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Extract requested CPU and memory
+	reqCPU, reqMemGiB := extractRequestedResources(spec)
+	if reqCPU == 0 && reqMemGiB == 0 {
+		return nil
+	}
+
+	// Find the smallest instance type that satisfies both constraints
+	for _, entry := range entries {
+		if entry.VCPUs >= reqCPU && entry.MemoryGiB >= reqMemGiB {
+			log.Printf("[cpu-instance-types] Matched instance type %s (vcpus=%d, memGiB=%d) for request (cpu=%d, mem=%d GiB)",
+				entry.InstanceType, entry.VCPUs, entry.MemoryGiB, reqCPU, reqMemGiB)
+
+			// Build or extend the nodeSelector
+			nodeSelector := map[string]interface{}{}
+			if existing, _ := spec["nodeSelector"].(map[string]interface{}); existing != nil {
+				for k, v := range existing {
+					nodeSelector[k] = v
+				}
+			}
+			nodeSelector["node.kubernetes.io/instance-type"] = entry.InstanceType
+
+			return map[string]interface{}{
+				"op":    "add",
+				"path":  "/spec/nodeSelector",
+				"value": nodeSelector,
+			}
+		}
+	}
+
+	log.Printf("[cpu-instance-types] No instance type found that satisfies request (cpu=%d, mem=%d GiB)", reqCPU, reqMemGiB)
+	return nil
+}
+
+// extractRequestedResources reads the vCPU and memory values from
+// spec.resources.requests (falling back to limits). Returns vcpus as integer
+// cores and memory in GiB.
+func extractRequestedResources(spec map[string]interface{}) (vcpus int, memoryGiB int) {
+	resources, _ := spec["resources"].(map[string]interface{})
+	if resources == nil {
+		return 0, 0
+	}
+
+	// Check requests first, then limits
+	for _, key := range []string{"requests", "limits"} {
+		section, _ := resources[key].(map[string]interface{})
+		if section == nil {
+			continue
+		}
+
+		if vcpus == 0 {
+			if cpuVal, ok := section["cpu"]; ok {
+				vcpus = parseCPUValue(cpuVal)
+			}
+		}
+		if memoryGiB == 0 {
+			if memVal, ok := section["memory"]; ok {
+				memoryGiB = parseMemoryGiBValue(memVal)
+			}
+		}
+	}
+	return vcpus, memoryGiB
+}
+
+// parseCPUValue converts a CPU resource value (e.g. "4", "4000m", 4) to integer cores.
+func parseCPUValue(val interface{}) int {
+	switch v := val.(type) {
+	case float64:
+		return int(v)
+	case string:
+		// Handle millicores (e.g. "4000m")
+		if strings.HasSuffix(v, "m") {
+			if n, err := strconv.Atoi(strings.TrimSuffix(v, "m")); err == nil {
+				return n / 1000
+			}
+		}
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// parseMemoryGiBValue converts a memory resource value (e.g. "24Gi", "24576Mi",
+// "25769803776") to integer GiB.
+func parseMemoryGiBValue(val interface{}) int {
+	switch v := val.(type) {
+	case float64:
+		// Raw bytes
+		return int(v / (1024 * 1024 * 1024))
+	case string:
+		if strings.HasSuffix(v, "Gi") {
+			if n, err := strconv.Atoi(strings.TrimSuffix(v, "Gi")); err == nil {
+				return n
+			}
+		}
+		if strings.HasSuffix(v, "Mi") {
+			if n, err := strconv.Atoi(strings.TrimSuffix(v, "Mi")); err == nil {
+				return n / 1024
+			}
+		}
+		if strings.HasSuffix(v, "Ti") {
+			if n, err := strconv.Atoi(strings.TrimSuffix(v, "Ti")); err == nil {
+				return n * 1024
+			}
+		}
+		// Plain number = bytes
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return int(n / (1024 * 1024 * 1024))
+		}
+	}
+	return 0
 }
 
 // buildAntiAffinityPatch returns a JSON patch that adds a node affinity rule
