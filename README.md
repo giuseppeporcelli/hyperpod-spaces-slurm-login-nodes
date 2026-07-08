@@ -186,6 +186,111 @@ In all these cases, the workspace proceeds with whatever resources were specifie
 
 ---
 
+## CPU Instance Type Selection
+
+When a workspace does **not** request GPUs, the webhook can automatically select the appropriate CPU instance type based on the workspace's requested vCPUs and memory. This removes the need for users to manually set a `nodeSelector` — the webhook finds the smallest configured instance type that satisfies both resource constraints and injects the node selector automatically.
+
+### How It Works
+
+1. The user creates a workspace with CPU and memory in `spec.resources.requests` (or `limits`) but **no** `nvidia.com/gpu`.
+2. If the workspace already has a `node.kubernetes.io/instance-type` or `beta.kubernetes.io/instance-type` node selector, the webhook does not override it.
+3. Otherwise, the webhook extracts the requested vCPUs and memory from the workspace spec.
+4. It iterates over the CPU instance types ConfigMap (sorted by ascending capacity) and picks the first entry where both `vcpus >= requested` and `memoryGiB >= requested`.
+5. A JSON patch is applied to set `spec.nodeSelector["node.kubernetes.io/instance-type"]` to the matched instance type.
+
+For example, if a user requests 12 vCPUs and 24 GiB of RAM, and the ConfigMap contains:
+
+| Instance Type | vCPUs | Memory (GiB) |
+|---------------|-------|--------------|
+| ml.c5.xlarge | 4 | 8 |
+| ml.c5.2xlarge | 8 | 16 |
+| ml.c5.4xlarge | 16 | 32 |
+| ml.c5.9xlarge | 36 | 72 |
+
+The webhook selects `ml.c5.4xlarge` (16 vCPUs, 32 GiB) as the smallest instance type that satisfies both constraints.
+
+### ConfigMap Format
+
+The configuration is stored in a ConfigMap with a `config.json` key containing an array of entries:
+
+```json
+[
+  {"instanceType": "ml.c5.xlarge", "vcpus": 4, "memoryGiB": 8},
+  {"instanceType": "ml.c5.2xlarge", "vcpus": 8, "memoryGiB": 16},
+  {"instanceType": "ml.c5.4xlarge", "vcpus": 16, "memoryGiB": 32},
+  {"instanceType": "ml.c5.9xlarge", "vcpus": 36, "memoryGiB": 72},
+  {"instanceType": "ml.c5.18xlarge", "vcpus": 72, "memoryGiB": 144}
+]
+```
+
+Each entry defines an instance type and its resource capacity. The webhook sorts entries at load time (by vCPUs ascending, then memory), so the order in the ConfigMap doesn't matter.
+
+### Configuration via Helm
+
+The mapping is defined in `values.yaml` under the `cpuInstanceTypes` key:
+
+```yaml
+cpuInstanceTypes:
+  - instanceType: ml.c5.xlarge
+    vcpus: 4
+    memoryGiB: 8
+  - instanceType: ml.c5.2xlarge
+    vcpus: 8
+    memoryGiB: 16
+  - instanceType: ml.c5.4xlarge
+    vcpus: 16
+    memoryGiB: 32
+  - instanceType: ml.c5.9xlarge
+    vcpus: 36
+    memoryGiB: 72
+  - instanceType: ml.c5.18xlarge
+    vcpus: 72
+    memoryGiB: 144
+```
+
+The webhook watches the ConfigMap for changes and reloads the configuration automatically — no pod restart required.
+
+### Updating the Configuration
+
+To modify the CPU instance type mapping after deployment:
+
+```sh
+# Option 1: Edit the ConfigMap directly
+kubectl edit configmap <release>-hyperpod-spaces-user-webhook-cpu-instance-types -n jupyter-k8s-system
+
+# Option 2: Update values.yaml and upgrade the Helm release
+helm upgrade hyperpod-spaces-user-webhook ./chart -f custom-values.yaml
+```
+
+Changes are picked up by the webhook within seconds via the Kubernetes watch mechanism.
+
+### Supported Resource Formats
+
+The webhook understands common Kubernetes resource quantity formats:
+
+- **CPU**: integer cores (`"4"`), millicores (`"4000m"`), or numeric values (`4`)
+- **Memory**: GiB (`"24Gi"`), MiB (`"24576Mi"`), TiB (`"1Ti"`), or raw bytes
+
+### Helm Values
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `cpuInstanceTypes` | *(see values.yaml)* | Array of CPU instance entries. Each entry specifies `instanceType`, `vcpus`, and `memoryGiB`. |
+
+### Behavior When No Match Is Found
+
+The webhook does not block workspace creation if the CPU instance type configuration is missing or incomplete:
+
+- GPU requested → CPU instance type selection is skipped (GPU path takes over)
+- Node selector already set → no override (user/template choice is respected)
+- No CPU/memory in resources → no node selector injection
+- No entry satisfies the request → no node selector injection (logged as warning)
+- ConfigMap not available → no node selector injection (webhook starts without CPU config)
+
+In all these cases, the workspace proceeds with whatever node selector (or lack thereof) was specified in the original request.
+
+---
+
 ## Custom Images (`smd-slurm-custom-image/`)
 
 ### Purpose
