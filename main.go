@@ -453,10 +453,8 @@ func buildPatches(usernameWithoutDomain string, rawObject []byte) []map[string]i
 	// --- GPU resource patch: set CPU/memory based on instance type + GPU count ---
 	patches = append(patches, buildGPUResourcePatches(spec)...)
 
-	// --- CPU instance type patch: inject node selector based on requested vCPUs/memory ---
-	if p := buildCPUNodeSelectorPatch(spec); p != nil {
-		patches = append(patches, p)
-	}
+	// --- CPU instance type + resource cap patch ---
+	patches = append(patches, buildCPUInstancePatches(spec)...)
 
 	// --- Anti-affinity patch: prevent non-GPU workloads from landing on GPU nodes ---
 	if p := buildAntiAffinityPatch(spec); p != nil {
@@ -474,12 +472,25 @@ func buildGPUResourcePatches(spec map[string]interface{}) []map[string]interface
 
 	// Extract GPU count from spec.resources.limits["nvidia.com/gpu"]
 	gpuCount := extractGPUCount(spec)
+	// Extract instance type from spec.nodeSelector["beta.kubernetes.io/instance-type"]
+	instanceType := extractInstanceType(spec)
+
+	// If the instance type is a known GPU instance type, default gpuCount to 1
+	if gpuCount == 0 && instanceType != "" {
+		gpuInstanceTypesList := getGPUInstanceTypes()
+		for _, git := range gpuInstanceTypesList {
+			if git == instanceType {
+				gpuCount = 1
+				log.Printf("[gpu-resources] Instance type %s is a GPU instance type, defaulting gpuCount to 1", instanceType)
+				break
+			}
+		}
+	}
+
 	if gpuCount == 0 {
 		return nil
 	}
 
-	// Extract instance type from spec.nodeSelector["beta.kubernetes.io/instance-type"]
-	instanceType := extractInstanceType(spec)
 	if instanceType == "" {
 		log.Printf("[gpu-resources] GPU requested (%d) but no instance-type node selector found", gpuCount)
 		return nil
@@ -565,13 +576,15 @@ func extractInstanceType(spec map[string]interface{}) string {
 	return ""
 }
 
-// buildCPUNodeSelectorPatch selects the appropriate CPU instance type based on
+// buildCPUInstancePatches selects the appropriate CPU instance type based on
 // the workspace's requested vCPUs and memory (when no GPUs are requested).
 // It finds the smallest configured instance type that satisfies both the vCPU
 // and memory requirements, and injects a node.kubernetes.io/instance-type node
-// selector. Returns nil if GPUs are requested, no resources are specified, or
-// no matching instance type is found.
-func buildCPUNodeSelectorPatch(spec map[string]interface{}) map[string]interface{} {
+// selector. If no instance type satisfies the request, it selects the largest
+// available and caps the resource requests/limits to that instance's capacity.
+// Returns nil if GPUs are requested, no resources are specified, or no CPU
+// instance types are configured.
+func buildCPUInstancePatches(spec map[string]interface{}) []map[string]interface{} {
 	// Only applies to non-GPU workloads
 	if extractGPUCount(spec) > 0 {
 		return nil
@@ -599,25 +612,55 @@ func buildCPUNodeSelectorPatch(spec map[string]interface{}) map[string]interface
 			log.Printf("[cpu-instance-types] Matched instance type %s (vcpus=%d, memGiB=%d) for request (cpu=%d, mem=%d GiB)",
 				entry.InstanceType, entry.VCPUs, entry.MemoryGiB, reqCPU, reqMemGiB)
 
-			// Build or extend the nodeSelector
-			nodeSelector := map[string]interface{}{}
-			if existing, _ := spec["nodeSelector"].(map[string]interface{}); existing != nil {
-				for k, v := range existing {
-					nodeSelector[k] = v
-				}
-			}
-			nodeSelector["node.kubernetes.io/instance-type"] = entry.InstanceType
-
-			return map[string]interface{}{
-				"op":    "add",
-				"path":  "/spec/nodeSelector",
-				"value": nodeSelector,
+			return []map[string]interface{}{
+				buildNodeSelectorPatch(spec, entry.InstanceType),
 			}
 		}
 	}
 
-	log.Printf("[cpu-instance-types] No instance type found that satisfies request (cpu=%d, mem=%d GiB)", reqCPU, reqMemGiB)
-	return nil
+	// No instance type satisfies the request — use the largest available and
+	// cap the requested resources to its capacity.
+	largest := entries[len(entries)-1]
+	log.Printf("[cpu-instance-types] No instance type satisfies request (cpu=%d, mem=%d GiB); capping to largest %s (vcpus=%d, memGiB=%d)",
+		reqCPU, reqMemGiB, largest.InstanceType, largest.VCPUs, largest.MemoryGiB)
+
+	resources := map[string]interface{}{
+		"requests": map[string]interface{}{
+			"cpu":    strconv.Itoa(largest.VCPUs),
+			"memory": strconv.Itoa(largest.MemoryGiB) + "Gi",
+		},
+		"limits": map[string]interface{}{
+			"cpu":    strconv.Itoa(largest.VCPUs),
+			"memory": strconv.Itoa(largest.MemoryGiB) + "Gi",
+		},
+	}
+
+	return []map[string]interface{}{
+		buildNodeSelectorPatch(spec, largest.InstanceType),
+		{
+			"op":    "add",
+			"path":  "/spec/resources",
+			"value": resources,
+		},
+	}
+}
+
+// buildNodeSelectorPatch creates a JSON patch operation that sets/extends the
+// nodeSelector with the given instance type.
+func buildNodeSelectorPatch(spec map[string]interface{}, instanceType string) map[string]interface{} {
+	nodeSelector := map[string]interface{}{}
+	if existing, _ := spec["nodeSelector"].(map[string]interface{}); existing != nil {
+		for k, v := range existing {
+			nodeSelector[k] = v
+		}
+	}
+	nodeSelector["node.kubernetes.io/instance-type"] = instanceType
+
+	return map[string]interface{}{
+		"op":    "add",
+		"path":  "/spec/nodeSelector",
+		"value": nodeSelector,
+	}
 }
 
 // extractRequestedResources reads the vCPU and memory values from

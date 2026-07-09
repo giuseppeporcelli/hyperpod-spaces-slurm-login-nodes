@@ -104,11 +104,12 @@ When a workspace requests GPUs, the webhook automatically sets the appropriate v
 
 ### How It Works
 
-1. The user creates a workspace with `nvidia.com/gpu` in their resource requests/limits and a `beta.kubernetes.io/instance-type` (or `node.kubernetes.io/instance-type`) node selector.
+1. The user creates a workspace with a `beta.kubernetes.io/instance-type` (or `node.kubernetes.io/instance-type`) node selector pointing to a GPU instance type, and optionally `nvidia.com/gpu` in their resource requests/limits.
 2. The webhook extracts the GPU count and instance type from the workspace spec.
-3. It looks up the instance type in the GPU resource ConfigMap and finds the entry matching the requested GPU count.
-4. If a match is found, the webhook patches `spec.resources` with the configured CPU and memory values (both requests and limits).
-5. If no match is found (unknown instance type, or unsupported GPU count for that instance), the workspace is allowed through without resource modification.
+3. **If no GPUs are explicitly requested but the node selector targets a known GPU instance type** (as listed in the GPU instance types ConfigMap), the webhook defaults the GPU count to 1. This handles the case where a user selects a GPU instance type without explicitly specifying the GPU resource — the webhook ensures the pod still gets the correct CPU/memory allocation for at least one GPU.
+4. It looks up the instance type in the GPU resource ConfigMap and finds the entry matching the GPU count.
+5. If a match is found, the webhook patches `spec.resources` with the configured CPU and memory values (both requests and limits), including the `nvidia.com/gpu` quantity.
+6. If no match is found (unknown instance type, or unsupported GPU count for that instance), the workspace is allowed through without resource modification.
 
 ### ConfigMap Format
 
@@ -176,19 +177,20 @@ Changes are picked up by the webhook within seconds via the Kubernetes watch mec
 
 The webhook does not block workspace creation if the GPU configuration is missing or incomplete:
 
-- No `nvidia.com/gpu` in resources → no resource patching (CPU-only workspace)
+- No `nvidia.com/gpu` in resources **and** node selector is not a known GPU instance type → no resource patching (CPU-only workspace)
+- No `nvidia.com/gpu` in resources **but** node selector targets a known GPU instance type → GPU count defaults to 1 and resource patching proceeds as normal
 - No node selector for instance type → no resource patching (logged as warning)
 - Instance type not in ConfigMap → no resource patching (logged as warning)
 - GPU count not in the instance type's entries → no resource patching (logged as warning)
 - ConfigMap not available → no resource patching (webhook starts without GPU config)
 
-In all these cases, the workspace proceeds with whatever resources were specified in the original request or template defaults.
+In all non-patching cases, the workspace proceeds with whatever resources were specified in the original request or template defaults.
 
 ---
 
 ## CPU Instance Type Selection
 
-When a workspace does **not** request GPUs, the webhook can automatically select the appropriate CPU instance type based on the workspace's requested vCPUs and memory. This removes the need for users to manually set a `nodeSelector` — the webhook finds the smallest configured instance type that satisfies both resource constraints and injects the node selector automatically.
+When a workspace does **not** request GPUs, the webhook can automatically select the appropriate CPU instance type based on the workspace's requested vCPUs and memory. This removes the need for users to manually set a `nodeSelector` — the webhook finds the smallest configured instance type that satisfies both resource constraints and injects the node selector automatically. If the requested resources exceed all available instance types, the webhook selects the largest available instance and caps the resource requests/limits to that instance's capacity so the pod remains schedulable.
 
 ### How It Works
 
@@ -197,6 +199,9 @@ When a workspace does **not** request GPUs, the webhook can automatically select
 3. Otherwise, the webhook extracts the requested vCPUs and memory from the workspace spec.
 4. It iterates over the CPU instance types ConfigMap (sorted by ascending capacity) and picks the first entry where both `vcpus >= requested` and `memoryGiB >= requested`.
 5. A JSON patch is applied to set `spec.nodeSelector["node.kubernetes.io/instance-type"]` to the matched instance type.
+6. **If no instance type satisfies the request**, the webhook selects the largest configured instance type and applies two patches:
+   - A node selector patch pointing to the largest instance type.
+   - A resource cap patch that sets `spec.resources.requests` and `spec.resources.limits` for CPU and memory to the largest instance's capacity. This prevents the pod from being unschedulable due to requesting more resources than any available node can provide.
 
 For example, if a user requests 12 vCPUs and 24 GiB of RAM, and the ConfigMap contains:
 
@@ -279,15 +284,13 @@ The webhook understands common Kubernetes resource quantity formats:
 
 ### Behavior When No Match Is Found
 
-The webhook does not block workspace creation if the CPU instance type configuration is missing or incomplete:
-
 - GPU requested → CPU instance type selection is skipped (GPU path takes over)
 - Node selector already set → no override (user/template choice is respected)
 - No CPU/memory in resources → no node selector injection
-- No entry satisfies the request → no node selector injection (logged as warning)
+- No entry satisfies the request → the largest instance type is selected and the workspace's resource requests/limits are capped to that instance's capacity (logged as warning)
 - ConfigMap not available → no node selector injection (webhook starts without CPU config)
 
-In all these cases, the workspace proceeds with whatever node selector (or lack thereof) was specified in the original request.
+In all cases except the capping scenario, the workspace proceeds with whatever node selector (or lack thereof) was specified in the original request. When capping occurs, the workspace will be schedulable on the largest available node but may run with fewer resources than originally requested.
 
 ---
 
