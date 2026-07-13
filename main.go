@@ -451,14 +451,19 @@ func buildPatches(usernameWithoutDomain string, rawObject []byte) []map[string]i
 	})
 
 	// --- GPU resource patch: set CPU/memory based on instance type + GPU count ---
-	patches = append(patches, buildGPUResourcePatches(spec)...)
+	gpuPatches, gpuDefaulted := buildGPUResourcePatches(spec)
+	patches = append(patches, gpuPatches...)
 
 	// --- CPU instance type + resource cap patch ---
 	patches = append(patches, buildCPUInstancePatches(spec)...)
 
 	// --- Anti-affinity patch: prevent non-GPU workloads from landing on GPU nodes ---
-	if p := buildAntiAffinityPatch(spec); p != nil {
-		patches = append(patches, p)
+	// Skip if GPU count was defaulted to 1 (user selected a GPU instance type
+	// without explicitly requesting GPUs) to avoid a scheduling conflict.
+	if !gpuDefaulted {
+		if p := buildAntiAffinityPatch(spec); p != nil {
+			patches = append(patches, p)
+		}
 	}
 
 	return patches
@@ -467,8 +472,9 @@ func buildPatches(usernameWithoutDomain string, rawObject []byte) []map[string]i
 // buildGPUResourcePatches checks if the workspace requests GPUs and has a node
 // selector for instance type. If both are present and a matching config entry
 // exists, it returns patches to set the CPU and memory resources.
-func buildGPUResourcePatches(spec map[string]interface{}) []map[string]interface{} {
+func buildGPUResourcePatches(spec map[string]interface{}) ([]map[string]interface{}, bool) {
 	var patches []map[string]interface{}
+	gpuDefaulted := false
 
 	// Extract GPU count from spec.resources.limits["nvidia.com/gpu"]
 	gpuCount := extractGPUCount(spec)
@@ -481,6 +487,7 @@ func buildGPUResourcePatches(spec map[string]interface{}) []map[string]interface
 		for _, git := range gpuInstanceTypesList {
 			if git == instanceType {
 				gpuCount = 1
+				gpuDefaulted = true
 				log.Printf("[gpu-resources] Instance type %s is a GPU instance type, defaulting gpuCount to 1", instanceType)
 				break
 			}
@@ -488,19 +495,19 @@ func buildGPUResourcePatches(spec map[string]interface{}) []map[string]interface
 	}
 
 	if gpuCount == 0 {
-		return nil
+		return nil, false
 	}
 
 	if instanceType == "" {
 		log.Printf("[gpu-resources] GPU requested (%d) but no instance-type node selector found", gpuCount)
-		return nil
+		return nil, false
 	}
 
 	// Look up the resource allocation
 	cpu, memory, found := lookupGPUResources(instanceType, gpuCount)
 	if !found {
 		log.Printf("[gpu-resources] No config entry for instance-type=%s gpus=%d", instanceType, gpuCount)
-		return nil
+		return nil, false
 	}
 
 	log.Printf("[gpu-resources] Patching resources for instance-type=%s gpus=%d: cpu=%s memory=%s", instanceType, gpuCount, cpu, memory)
@@ -526,7 +533,7 @@ func buildGPUResourcePatches(spec map[string]interface{}) []map[string]interface
 		"value": resources,
 	})
 
-	return patches
+	return patches, gpuDefaulted
 }
 
 // extractGPUCount reads the nvidia.com/gpu value from spec.resources.limits

@@ -106,7 +106,7 @@ When a workspace requests GPUs, the webhook automatically sets the appropriate v
 
 1. The user creates a workspace with a `beta.kubernetes.io/instance-type` (or `node.kubernetes.io/instance-type`) node selector pointing to a GPU instance type, and optionally `nvidia.com/gpu` in their resource requests/limits.
 2. The webhook extracts the GPU count and instance type from the workspace spec.
-3. **If no GPUs are explicitly requested but the node selector targets a known GPU instance type** (as listed in the GPU instance types ConfigMap), the webhook defaults the GPU count to 1. This handles the case where a user selects a GPU instance type without explicitly specifying the GPU resource — the webhook ensures the pod still gets the correct CPU/memory allocation for at least one GPU.
+3. **If no GPUs are explicitly requested but the node selector targets a known GPU instance type** (as listed in the GPU instance types ConfigMap), the webhook defaults the GPU count to 1. This handles the case where a user selects a GPU instance type without explicitly specifying the GPU resource — the webhook ensures the pod still gets the correct CPU/memory allocation for at least one GPU. When this defaulting occurs, the webhook also skips the node anti-affinity patch (which would otherwise prevent non-GPU workloads from landing on GPU nodes) to avoid a scheduling conflict.
 4. It looks up the instance type in the GPU resource ConfigMap and finds the entry matching the GPU count.
 5. If a match is found, the webhook patches `spec.resources` with the configured CPU and memory values (both requests and limits), including the `nvidia.com/gpu` quantity.
 6. If no match is found (unknown instance type, or unsupported GPU count for that instance), the workspace is allowed through without resource modification.
@@ -178,7 +178,7 @@ Changes are picked up by the webhook within seconds via the Kubernetes watch mec
 The webhook does not block workspace creation if the GPU configuration is missing or incomplete:
 
 - No `nvidia.com/gpu` in resources **and** node selector is not a known GPU instance type → no resource patching (CPU-only workspace)
-- No `nvidia.com/gpu` in resources **but** node selector targets a known GPU instance type → GPU count defaults to 1 and resource patching proceeds as normal
+- No `nvidia.com/gpu` in resources **but** node selector targets a known GPU instance type → GPU count defaults to 1, resource patching proceeds as normal, and the node anti-affinity patch is skipped (to avoid conflicting with the GPU scheduling)
 - No node selector for instance type → no resource patching (logged as warning)
 - Instance type not in ConfigMap → no resource patching (logged as warning)
 - GPU count not in the instance type's entries → no resource patching (logged as warning)
