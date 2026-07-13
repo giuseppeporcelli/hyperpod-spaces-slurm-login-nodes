@@ -20,6 +20,7 @@ serviceAccount:
 # This list is stored in a ConfigMap and watched for live updates — no
 # redeployment needed when editing.
 gpuInstanceTypes:
+  - ml.g5.4xlarge
   - ml.g5.24xlarge
   - ml.p5.48xlarge
 
@@ -38,6 +39,10 @@ gpuInstanceResources:
     - gpus: 4
       cpu: "84"
       memory: "336Gi"
+  ml.g5.4xlarge:
+    - gpus: 1
+      cpu: "10"
+      memory: "50Gi"
   ml.p5.48xlarge:
     - gpus: 1
       cpu: "21"
@@ -60,8 +65,8 @@ gpuInstanceResources:
 # This ConfigMap is watched for live updates — no redeployment needed.
 cpuInstanceTypes:
   - instanceType: ml.c5.4xlarge
-    vcpus: 14
-    memoryGiB: 27
+    vcpus: 10
+    memoryGiB: 24
   - instanceType: ml.r6i.4xlarge
-    vcpus: 14
-    memoryGiB: 120
+    vcpus: 10
+    memoryGiB: 100
