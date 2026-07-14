@@ -64,9 +64,12 @@ gpuInstanceResources:
 # Entries are sorted by the webhook at load time (vcpus ascending, then memory).
 # This ConfigMap is watched for live updates — no redeployment needed.
 cpuInstanceTypes:
-  - instanceType: ml.c5.4xlarge
-    vcpus: 10
-    memoryGiB: 24
-  - instanceType: ml.r6i.4xlarge
-    vcpus: 10
-    memoryGiB: 100
+  - instanceType: ml.m7i.4xlarge
+    vcpus: 12
+    memoryGiB: 52
+  - instanceType: ml.c6i.8xlarge
+    vcpus: 28
+    memoryGiB: 52
+  - instanceType: ml.r6i.8xlarge
+    vcpus: 28
+    memoryGiB: 232

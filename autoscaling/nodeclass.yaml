@@ -1,0 +1,11 @@
+apiVersion: karpenter.sagemaker.amazonaws.com/v1
+kind: HyperpodNodeClass
+metadata:
+  name: cpu-nodeclass
+spec:
+  instanceGroups:
+    # name of InstanceGroup in HyperPod cluster. InstanceGroup needs to pre-created
+    # before this step can be completed.
+    # MaxItems: 10
+    - m7i-4xl
+    - m5-4xl

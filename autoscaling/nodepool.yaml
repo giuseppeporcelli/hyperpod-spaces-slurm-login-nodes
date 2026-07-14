@@ -1,0 +1,15 @@
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+ name: m7i-nodepool
+spec:
+ template:
+   spec:
+     nodeClassRef:
+      group: karpenter.sagemaker.amazonaws.com
+      kind: HyperpodNodeClass
+      name: cpu-nodeclass
+     expireAfter: Never
+     requirements:
+        - key: node.kubernetes.io/instance-type
+          operator: Exists
