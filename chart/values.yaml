@@ -75,11 +75,11 @@ gpuInstanceResources:
 # This ConfigMap is watched for live updates — no redeployment needed.
 cpuInstanceTypes:
   - instanceType: ml.m7i.4xlarge
-    vcpus: 12
-    memoryGiB: 52
+    vcpus: 10
+    memoryGiB: 54
   - instanceType: ml.c6i.8xlarge
-    vcpus: 28
-    memoryGiB: 52
+    vcpus: 24
+    memoryGiB: 54
   - instanceType: ml.r6i.8xlarge
-    vcpus: 28
-    memoryGiB: 232
+    vcpus: 24
+    memoryGiB: 246
