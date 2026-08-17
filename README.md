@@ -100,7 +100,7 @@ helm install hyperpod-spaces-user-webhook ./chart \
 
 ## GPU-Aware Resource Allocation
 
-When a workspace requests GPUs, the webhook automatically sets the appropriate vCPU, memory, and shared-memory (`/dev/shm`) resources based on the target instance type and the number of GPUs requested. This ensures pods are scheduled with the correct resource footprint without requiring users to manually calculate CPU/memory/SHM values for each GPU configuration.
+When a workspace requests GPUs, the webhook automatically sets the appropriate vCPU and memory resources based on the target instance type and the number of GPUs requested. This ensures pods are scheduled with the correct resource footprint without requiring users to manually calculate CPU/memory values for each GPU configuration.
 
 ### How It Works
 
@@ -109,32 +109,29 @@ When a workspace requests GPUs, the webhook automatically sets the appropriate v
 3. **If no GPUs are explicitly requested but the node selector targets a known GPU instance type** (as listed in the GPU instance types ConfigMap), the webhook defaults the GPU count to 1. This handles the case where a user selects a GPU instance type without explicitly specifying the GPU resource — the webhook ensures the pod still gets the correct CPU/memory allocation for at least one GPU. When this defaulting occurs, the webhook also skips the node anti-affinity patch (which would otherwise prevent non-GPU workloads from landing on GPU nodes) to avoid a scheduling conflict.
 4. It looks up the instance type in the GPU resource ConfigMap and finds the entry matching the GPU count.
 5. If a match is found, the webhook patches `spec.resources` with the configured CPU and memory values (both requests and limits), including the `nvidia.com/gpu` quantity.
-6. If the matched entry also specifies an `shm` value, the webhook provisions shared memory of that size by injecting an in-memory `emptyDir` volume named `dshm` (`spec.volumes`) mounted at `/dev/shm` (`spec.volumeMounts`). Existing volumes/mounts are preserved; any user-supplied `dshm` volume or `/dev/shm` mount is replaced so the webhook stays the sole authority over the shared-memory size. When `shm` is omitted, no shared-memory volume is injected and the container keeps the default `/dev/shm` (typically 64 MiB).
-7. If no match is found (unknown instance type, or unsupported GPU count for that instance), the workspace is allowed through without resource modification.
+6. If no match is found (unknown instance type, or unsupported GPU count for that instance), the workspace is allowed through without resource modification.
 
 ### ConfigMap Format
 
-The configuration is stored in a ConfigMap with a `config.json` key. Each instance type maps to an array of entries — one per valid GPU count — with explicit CPU, memory, and (optionally) `shm` values:
+The configuration is stored in a ConfigMap with a `config.json` key. Each instance type maps to an array of entries — one per valid GPU count — with explicit CPU and memory values:
 
 ```json
 {
   "ml.g5.12xlarge": [
-    {"gpus": 1, "cpu": "12", "memory": "48Gi", "shm": "24Gi"},
-    {"gpus": 2, "cpu": "24", "memory": "96Gi", "shm": "48Gi"},
-    {"gpus": 4, "cpu": "48", "memory": "192Gi", "shm": "96Gi"}
+    {"gpus": 1, "cpu": "12", "memory": "48Gi"},
+    {"gpus": 2, "cpu": "24", "memory": "96Gi"},
+    {"gpus": 4, "cpu": "48", "memory": "192Gi"}
   ],
   "ml.p4d.24xlarge": [
-    {"gpus": 1, "cpu": "12", "memory": "144Gi", "shm": "72Gi"},
-    {"gpus": 2, "cpu": "24", "memory": "288Gi", "shm": "144Gi"},
-    {"gpus": 4, "cpu": "48", "memory": "576Gi", "shm": "288Gi"},
-    {"gpus": 8, "cpu": "96", "memory": "1152Gi", "shm": "576Gi"}
+    {"gpus": 1, "cpu": "12", "memory": "144Gi"},
+    {"gpus": 2, "cpu": "24", "memory": "288Gi"},
+    {"gpus": 4, "cpu": "48", "memory": "576Gi"},
+    {"gpus": 8, "cpu": "96", "memory": "1152Gi"}
   ]
 }
 ```
 
-This gives administrators full control over resource allocation. Values don't need to follow a linear ratio — you can reserve CPU for system overhead at lower GPU counts, or allocate proportionally more memory at higher counts. The `shm` field is optional; omit it to leave `/dev/shm` at the container default.
-
-> **Note:** the shared-memory volume uses `emptyDir` with `medium: Memory`, so its `sizeLimit` is charged against the pod's memory limit. Keep `shm` comfortably below `memory` (the examples above use ~50%) so the container still has room for its own working set.
+This gives administrators full control over resource allocation. Values don't need to follow a linear ratio — you can reserve CPU for system overhead at lower GPU counts, or allocate proportionally more memory at higher counts.
 
 ### Configuration via Helm
 
@@ -146,15 +143,12 @@ gpuInstanceResources:
     - gpus: 1
       cpu: "12"
       memory: "48Gi"
-      shm: "24Gi"
     - gpus: 2
       cpu: "24"
       memory: "96Gi"
-      shm: "48Gi"
     - gpus: 4
       cpu: "48"
       memory: "192Gi"
-      shm: "96Gi"
 ```
 
 The webhook watches the ConfigMap for changes and reloads the configuration automatically — no pod restart required.
@@ -177,7 +171,7 @@ Changes are picked up by the webhook within seconds via the Kubernetes watch mec
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `gpuInstanceResources` | *(see values.yaml)* | Map of instance types to GPU resource entries. Each entry specifies `gpus`, `cpu`, `memory`, and an optional `shm` (shared-memory `/dev/shm` size). |
+| `gpuInstanceResources` | *(see values.yaml)* | Map of instance types to GPU resource entries. Each entry specifies `gpus`, `cpu`, and `memory`. |
 
 ### Behavior When No Match Is Found
 

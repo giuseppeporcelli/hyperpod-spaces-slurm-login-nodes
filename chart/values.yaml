@@ -27,45 +27,35 @@ gpuInstanceTypes:
 # GPU instance resource allocation configuration.
 # Maps instance types to discrete GPU-count entries. When a workspace requests
 # GPUs and has a beta.kubernetes.io/instance-type node selector, the webhook
-# patches CPU/memory resources based on this mapping. The optional `shm` field
-# sizes the shared-memory (/dev/shm) volume; when set, the webhook injects an
-# in-memory emptyDir volume mounted at /dev/shm with that size limit.
+# patches CPU/memory resources based on this mapping.
 gpuInstanceResources:
   ml.g5.24xlarge:
     - gpus: 1
       cpu: "21"
       memory: "84Gi"
-      shm: "42Gi"
     - gpus: 2
       cpu: "42"
       memory: "168Gi"
-      shm: "84Gi"
     - gpus: 4
       cpu: "84"
       memory: "336Gi"
-      shm: "168Gi"
   ml.g5.4xlarge:
     - gpus: 1
       cpu: "10"
       memory: "50Gi"
-      shm: "25Gi"
   ml.p5.48xlarge:
     - gpus: 1
       cpu: "21"
       memory: "230Gi"
-      shm: "115Gi"
     - gpus: 2
       cpu: "42"
       memory: "460Gi"
-      shm: "230Gi"
     - gpus: 4
       cpu: "84"
       memory: "920Gi"
-      shm: "460Gi"
     - gpus: 8
       cpu: "168"
       memory: "1840Gi"
-      shm: "920Gi"
 
 # CPU instance type selection configuration.
 # When a workspace does NOT request GPUs, the webhook inspects the requested
