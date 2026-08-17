@@ -22,11 +22,15 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// GPUResourceEntry defines the CPU and memory allocation for a specific GPU count.
+// GPUResourceEntry defines the CPU, memory, and shared-memory allocation for a
+// specific GPU count.
 type GPUResourceEntry struct {
 	GPUs   int    `json:"gpus"`
 	CPU    string `json:"cpu"`
 	Memory string `json:"memory"`
+	// SHM is the shared-memory (/dev/shm) size for this GPU count, e.g. "16Gi".
+	// Optional — when empty, no shared-memory volume is injected.
+	SHM string `json:"shm,omitempty"`
 }
 
 // gpuResourceConfig maps instance-type → list of GPU resource entries.
@@ -398,23 +402,24 @@ func admit(req *admissionv1.AdmissionRequest) *admissionv1.AdmissionResponse {
 	}
 }
 
-// lookupGPUResources finds the CPU/memory allocation for a given instance type
-// and GPU count. Returns cpu, memory, found.
-func lookupGPUResources(instanceType string, gpuCount int) (cpu string, memory string, found bool) {
+// lookupGPUResources finds the CPU/memory/shm allocation for a given instance
+// type and GPU count. Returns cpu, memory, shm, found. The shm value may be
+// empty when the config entry does not specify one.
+func lookupGPUResources(instanceType string, gpuCount int) (cpu string, memory string, shm string, found bool) {
 	cfg := getGPUConfig()
 	if cfg == nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	entries, ok := cfg[instanceType]
 	if !ok {
-		return "", "", false
+		return "", "", "", false
 	}
 	for _, entry := range entries {
 		if entry.GPUs == gpuCount {
-			return entry.CPU, entry.Memory, true
+			return entry.CPU, entry.Memory, entry.SHM, true
 		}
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 func buildPatches(usernameWithoutDomain string, rawObject []byte) []map[string]interface{} {
@@ -504,13 +509,13 @@ func buildGPUResourcePatches(spec map[string]interface{}) ([]map[string]interfac
 	}
 
 	// Look up the resource allocation
-	cpu, memory, found := lookupGPUResources(instanceType, gpuCount)
+	cpu, memory, shm, found := lookupGPUResources(instanceType, gpuCount)
 	if !found {
 		log.Printf("[gpu-resources] No config entry for instance-type=%s gpus=%d", instanceType, gpuCount)
 		return nil, false
 	}
 
-	log.Printf("[gpu-resources] Patching resources for instance-type=%s gpus=%d: cpu=%s memory=%s", instanceType, gpuCount, cpu, memory)
+	log.Printf("[gpu-resources] Patching resources for instance-type=%s gpus=%d: cpu=%s memory=%s shm=%s", instanceType, gpuCount, cpu, memory, shm)
 
 	// Build the resources patch. We set both requests and limits to the same
 	// values to guarantee the pod gets exactly what it needs on the GPU node.
@@ -533,7 +538,83 @@ func buildGPUResourcePatches(spec map[string]interface{}) ([]map[string]interfac
 		"value": resources,
 	})
 
+	// Shared-memory patch: provision /dev/shm proportionally to the GPU count
+	// using an in-memory emptyDir volume sized to the configured value.
+	patches = append(patches, buildSHMPatches(spec, shm)...)
+
 	return patches, gpuDefaulted
+}
+
+// shmVolumeName is the name of the emptyDir volume backing /dev/shm.
+const shmVolumeName = "dshm"
+
+// shmMountPath is where the shared-memory volume is mounted in the container.
+const shmMountPath = "/dev/shm"
+
+// buildSHMPatches returns JSON patches that provision a shared-memory volume of
+// the given size and mount it at /dev/shm. It appends to any existing
+// spec.volumes / spec.volumeMounts rather than replacing them, and skips adding
+// a mount if one is already present at /dev/shm. Returns nil when shmSize is
+// empty (no shared-memory allocation configured).
+func buildSHMPatches(spec map[string]interface{}, shmSize string) []map[string]interface{} {
+	if shmSize == "" {
+		return nil
+	}
+
+	log.Printf("[gpu-resources] Provisioning shared memory: mounting %s emptyDir at %s", shmSize, shmMountPath)
+
+	// Preserve existing volumes, dropping any prior definition of our volume so
+	// the webhook remains the sole authority over its size.
+	volumes := []interface{}{}
+	if existing, ok := spec["volumes"].([]interface{}); ok {
+		for _, v := range existing {
+			if vm, ok := v.(map[string]interface{}); ok {
+				if fmt.Sprintf("%v", vm["name"]) == shmVolumeName {
+					continue
+				}
+			}
+			volumes = append(volumes, v)
+		}
+	}
+	volumes = append(volumes, map[string]interface{}{
+		"name": shmVolumeName,
+		"emptyDir": map[string]interface{}{
+			"medium":    "Memory",
+			"sizeLimit": shmSize,
+		},
+	})
+
+	// Preserve existing volume mounts, dropping any prior mount that targets our
+	// path or reuses our volume name so we don't create a duplicate.
+	volumeMounts := []interface{}{}
+	if existing, ok := spec["volumeMounts"].([]interface{}); ok {
+		for _, m := range existing {
+			if mm, ok := m.(map[string]interface{}); ok {
+				if fmt.Sprintf("%v", mm["mountPath"]) == shmMountPath ||
+					fmt.Sprintf("%v", mm["name"]) == shmVolumeName {
+					continue
+				}
+			}
+			volumeMounts = append(volumeMounts, m)
+		}
+	}
+	volumeMounts = append(volumeMounts, map[string]interface{}{
+		"name":      shmVolumeName,
+		"mountPath": shmMountPath,
+	})
+
+	return []map[string]interface{}{
+		{
+			"op":    "add",
+			"path":  "/spec/volumes",
+			"value": volumes,
+		},
+		{
+			"op":    "add",
+			"path":  "/spec/volumeMounts",
+			"value": volumeMounts,
+		},
+	}
 }
 
 // extractGPUCount reads the nvidia.com/gpu value from spec.resources.limits
